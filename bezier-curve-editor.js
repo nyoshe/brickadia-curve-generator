@@ -11,6 +11,7 @@ class BezierCurveDemo {
         this.gridSize = 20;
         this.segmentCount = 1;
         this.curveWidthInGrids = 2;
+        this.brickHeight = 1;
         this.showCurveWidth = true;
         this.showGridPoints = false;
         this.showOriginalCurve = true;
@@ -64,6 +65,8 @@ class BezierCurveDemo {
         document.getElementById('segmentCountInput').value = this.segmentCount;
         document.getElementById('curveWidth').value = this.curveWidthInGrids;
         document.getElementById('curveWidthInput').value = this.curveWidthInGrids;
+        document.getElementById('brickHeight').value = this.brickHeight;
+        document.getElementById('brickHeightInput').value = this.brickHeight;
         document.getElementById('gridSize').value = this.gridSize;
         document.getElementById('gridSizeInput').value = this.gridSize;
         
@@ -182,6 +185,16 @@ class BezierCurveDemo {
             this.curveWidthInGrids = Math.max(1, Math.min(10, parseInt(e.target.value) || 1));
             document.getElementById('curveWidth').value = this.curveWidthInGrids;
             this.draw();
+        });
+        
+        document.getElementById('brickHeight').addEventListener('input', (e) => {
+            this.brickHeight = Math.max(1, parseInt(e.target.value));
+            document.getElementById('brickHeightInput').value = this.brickHeight;
+        });
+        
+        document.getElementById('brickHeightInput').addEventListener('input', (e) => {
+            this.brickHeight = Math.max(1, Math.min(50, parseInt(e.target.value) || 1));
+            document.getElementById('brickHeight').value = this.brickHeight;
         });
         
         document.getElementById('showCurveWidth').addEventListener('change', (e) => {
@@ -1622,8 +1635,8 @@ class BezierCurveDemo {
 
             bricks.push({
                 asset_name_index: useWedge ? 1 : 0,
-                size: [1, 1, 1],
-                position: [brickladiaX * 2 + 1, brickladiaY * 2 + 1, brickladiaZ * 2 + 1],
+                size: [1, 1, this.brickHeight],
+                position: [brickladiaX * 2 + 1, brickladiaY * 2 + 1, (this.brickHeight - 1) * 2 + 1],
                 direction: useWedge ? wedgeDirection : 4,
                 rotation: useWedge ? wedgeRotation : 0,
                 collision: true,
@@ -1703,8 +1716,8 @@ class BezierCurveDemo {
         
         bricks.push({
             asset_name_index: 1,
-            size: [wedgeWidth, wedgeHeight, 1],
-            position: [centerGridX * 2 + positionOffsetX, centerGridY * 2 + positionOffsetY, 0],
+            size: [wedgeWidth, wedgeHeight, this.brickHeight],
+            position: [centerGridX * 2 + positionOffsetX, centerGridY * 2 + positionOffsetY, (this.brickHeight - 1) * 2 + 1],
             direction: wedgeOrientation.direction,
             rotation: wedgeOrientation.rotation,
             collision: true,
@@ -1737,8 +1750,8 @@ class BezierCurveDemo {
             
             bricks.push({
                 asset_name_index: 0, // Use regular microbrick for fill
-                size: [fillBrick.width, fillBrick.height, 1],
-                position: [brickladiaX * 2 + positionOffsetX, brickladiaY * 2 + positionOffsetY, 0],
+                size: [fillBrick.width, fillBrick.height, this.brickHeight],
+                position: [brickladiaX * 2 + positionOffsetX, brickladiaY * 2 + positionOffsetY, (this.brickHeight - 1) * 2 + 1],
                 direction: 4, // Upward direction
                 rotation: 0,
                 collision: true,
