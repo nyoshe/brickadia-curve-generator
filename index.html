@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Brickadia curve generator</title>
+    <link rel="stylesheet" href="styles.css">
+    <!-- brs-js library for reading/writing Brickadia save files -->
+    <script src="brs-js/dist/dist.web.js"></script>
+</head>
+<body>
+    <div class="container">
+        <h1>Brickadia curve generator</h1>
+        <div class="main-content">
+            <div class="controls-panel">
+                <div class="controls">
+                    <button id="resetBtn">Reset Curve</button>
+                    <button id="randomizeBtn">Randomize</button>
+                    <button id="exportBtn">Export as .brs</button>
+                    
+                    <div class="control-group horizontal">
+                        <label for="segmentCount">Segments:</label>
+                        <input type="range" id="segmentCount" min="1" max="8" value="1">
+                        <input type="number" id="segmentCountInput" min="1" max="8" value="1" style="width: 60px; margin-left: 10px;">
+                    </div>
+                    
+                    <div class="control-group horizontal">
+                        <label for="gridSize">Grid Size:</label>
+                        <input type="range" id="gridSize" min="1" max="50" value="20">
+                        <input type="number" id="gridSizeInput" min="1" max="100" value="20" style="width: 60px; margin-left: 10px;">
+                    </div>
+                    
+                    <div class="control-group horizontal">
+                        <label for="curveWidth">Curve Width (grids):</label>
+                        <input type="range" id="curveWidth" min="1" max="10" value="2">
+                        <input type="number" id="curveWidthInput" min="1" max="10" value="2" style="width: 60px; margin-left: 10px;">
+                    </div>
+                    
+                    <div class="control-group">
+                        <label>Fill Brick Color:</label>
+                        <div class="rgb-controls">
+                            <div>
+                                <label for="fillBrickR">R:</label>
+                                <input type="range" id="fillBrickR" min="0" max="255" value="0">
+                                <span id="fillBrickRValue">0</span>
+                            </div>
+                            <div>
+                                <label for="fillBrickG">G:</label>
+                                <input type="range" id="fillBrickG" min="0" max="255" value="255">
+                                <span id="fillBrickGValue">255</span>
+                            </div>
+                            <div>
+                                <label for="fillBrickB">B:</label>
+                                <input type="range" id="fillBrickB" min="0" max="255" value="0">
+                                <span id="fillBrickBValue">0</span>
+                            </div>
+                            <div class="color-preview" id="fillBrickPreview"></div>
+                        </div>
+                    </div>
+                    
+                    <div class="control-group">
+                        <label>Wedge Color:</label>
+                        <div class="rgb-controls">
+                            <div>
+                                <label for="wedgeR">R:</label>
+                                <input type="range" id="wedgeR" min="0" max="255" value="255">
+                                <span id="wedgeRValue">255</span>
+                            </div>
+                            <div>
+                                <label for="wedgeG">G:</label>
+                                <input type="range" id="wedgeG" min="0" max="255" value="0">
+                                <span id="wedgeGValue">0</span>
+                            </div>
+                            <div>
+                                <label for="wedgeB">B:</label>
+                                <input type="range" id="wedgeB" min="0" max="255" value="0">
+                                <span id="wedgeBValue">0</span>
+                            </div>
+                            <div class="color-preview" id="wedgePreview"></div>
+                        </div>
+                    </div>
+                    
+                    <label>
+                        <input type="checkbox" id="showControlLines" checked> Control Lines
+                    </label>
+                    <label>
+                        <input type="checkbox" id="showControlPoints" checked> Control Points
+                    </label>
+                    <label>
+                        <input type="checkbox" id="showCurveWidth" checked> Show Curve Width
+                    </label>
+                    <label>
+                        <input type="checkbox" id="showGridPoints" checked> Show Grid Points
+                    </label>
+                    <label>
+                        <input type="checkbox" id="showOriginalCurve" checked> Show Original Curve
+                    </label>
+                    <label>
+                        <input type="checkbox" id="showTriangles" checked> Show Triangles
+                    </label>
+                    <label>
+                        <input type="checkbox" id="showSegmentErrors" checked> Show Segment Errors
+                    </label>
+                    <label>
+                        <input type="checkbox" id="showOccupiedCells" checked> Show Occupied Cells
+                    </label>
+                    <label>
+                        <input type="checkbox" id="showFillBricks" checked> Show Fill Bricks
+                    </label>
+                </div>
+            </div>
+            <div class="canvas-container">
+                <canvas id="bezierCanvas"></canvas>
+            </div>
+        </div>
+    </div>
+    <script src="bezier-curve-editor.js"></script>
+</body>
+</html>

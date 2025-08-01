@@ -1,0 +1,10 @@
+/examples
+/debug
+/src
+/test
+.vscode
+.babelrc
+.prettierrc
+tsconfig.json
+webpack.config.js
+*.brs
