@@ -1610,8 +1610,8 @@ class BezierCurveDemo {
 
     // Create a Brickadia save object from curve segments (using same logic as triangle drawing)
     createBrickadaSaveFromSegments(curveSegments) {
-        const centerX = this.canvas.width / 2;
-        const centerY = this.canvas.height / 2;
+        const centerX = Math.round((this.canvas.width / 2) / this.gridSize) * this.gridSize;
+        const centerY = Math.round((this.canvas.height / 2) / this.gridSize) * this.gridSize;
         const bricks = [];
         
         const { leftPoints, rightPoints } = curveSegments;
@@ -1656,11 +1656,11 @@ class BezierCurveDemo {
         const triangleWidth = Math.abs(dx) / this.gridSize;
         const triangleHeight = Math.abs(dy) / this.gridSize;
         
-        const centerPointX = (startPoint.x + endPoint.x) / 2;
-        const centerPointY = (startPoint.y + endPoint.y) / 2;
+        const centerPointX = (startPoint.x + endPoint.x) / this.gridSize;
+        const centerPointY = (startPoint.y + endPoint.y) / this.gridSize;
         
-        const centerGridX = Math.round((centerPointX - centerX) / this.gridSize);
-        const centerGridY = Math.round((centerPointY - centerY) / this.gridSize);
+        const centerGridX = (centerPointX - 2 * (centerX  / this.gridSize));
+        const centerGridY = (centerPointY - 2 * (centerY / this.gridSize));
         
         const wedgeOrientation = this.getWedgeRotationFromTriangleCorner(dx, dy, side);
         
@@ -1673,7 +1673,7 @@ class BezierCurveDemo {
         bricks.push({
             asset_name_index: 1,
             size: [wedgeWidth, wedgeHeight, this.brickHeight],
-            position: [centerGridX * 2 + positionOffsetX, centerGridY * 2 + positionOffsetY, (this.brickHeight - 1) * 2 + 1],
+            position: [centerGridX, centerGridY, (this.brickHeight - 1) * 2 + 1],
             direction: wedgeOrientation.direction,
             rotation: wedgeOrientation.rotation,
             collision: true,
@@ -1694,11 +1694,11 @@ class BezierCurveDemo {
         
         fillBricks.forEach(fillBrick => {
             // Convert grid coordinates to Brickadia coordinates
-            const centerGridX = fillBrick.gridX + fillBrick.width / 2;
-            const centerGridY = fillBrick.gridY + fillBrick.height / 2;
+            const centerGridX = 2 * fillBrick.gridX + fillBrick.width;
+            const centerGridY = 2 * fillBrick.gridY + fillBrick.height;
             
-            const brickladiaX = Math.round((centerGridX * this.gridSize - centerX) / this.gridSize);
-            const brickladiaY = Math.round((centerGridY * this.gridSize - centerY) / this.gridSize);
+            const brickladiaX = (centerGridX - 2 * centerX / this.gridSize);
+            const brickladiaY = (centerGridY - 2 * centerY / this.gridSize);
             
             // Calculate position offset for odd-sized bricks
             const positionOffsetX = (fillBrick.width % 2 === 0) ? -1 : 0;
@@ -1707,7 +1707,7 @@ class BezierCurveDemo {
             bricks.push({
                 asset_name_index: 0, // Use regular microbrick for fill
                 size: [fillBrick.width, fillBrick.height, this.brickHeight],
-                position: [brickladiaX * 2 + positionOffsetX, brickladiaY * 2 + positionOffsetY, (this.brickHeight - 1) * 2 + 1],
+                position: [brickladiaX, brickladiaY, (this.brickHeight - 1) * 2 + 1],
                 direction: 4, // Upward direction
                 rotation: 0,
                 collision: true,
@@ -1728,7 +1728,10 @@ class BezierCurveDemo {
         // Normalize directions to determine which neighbors would be present
         const ndx = Math.sign(dx);
         const ndy = Math.sign(dy);
-
+        
+        // Account for Y-axis flip in Brickadia coordinates
+        const flippedNdy = -ndy;
+        
         // Based on the wedge sphere example, wedge rotations are:
         // 0 = West + North neighbors (0b1100)
         // 1 = North + East neighbors (0b0110)  
