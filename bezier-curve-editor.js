@@ -792,8 +792,16 @@ class BezierCurveDemo {
             // Fill between pairs of intersections
             for (let i = 0; i < intersections.length; i += 2) {
                 if (i + 1 < intersections.length) {
-                    const startX = Math.max(startGridX, Math.floor(intersections[i] / this.gridSize));
-                    const endX = Math.min(endGridX, Math.ceil(intersections[i + 1] / this.gridSize));
+                    // Fix precision issues for small grid sizes
+                    let startX, endX;
+                    if (this.gridSize === 1) {
+                        // For grid size 1, use more precise calculations
+                        startX = Math.max(startGridX, Math.floor(intersections[i] + 0.0001));
+                        endX = Math.min(endGridX, Math.floor(intersections[i + 1] - 0.0001) + 1);
+                    } else {
+                        startX = Math.max(startGridX, Math.floor(intersections[i] / this.gridSize));
+                        endX = Math.min(endGridX, Math.ceil(intersections[i + 1] / this.gridSize));
+                    }
                     
                     for (let gridX = startX; gridX < endX; gridX++) {
                         // Only fill if not occupied by triangular wedges
@@ -852,11 +860,19 @@ class BezierCurveDemo {
             const p1 = polygon[i];
             const p2 = polygon[(i + 1) % polygon.length];
             
+            // Use a small epsilon for floating point comparisons
+            const epsilon = 1e-10;
+            
             // Check if scanline intersects this edge
-            if ((p1.y <= y && p2.y > y) || (p1.y > y && p2.y <= y)) {
-                // Calculate intersection x coordinate
-                const intersectionX = p1.x + (y - p1.y) * (p2.x - p1.x) / (p2.y - p1.y);
-                intersections.push(intersectionX);
+            if ((p1.y <= y + epsilon && p2.y > y - epsilon) || (p1.y > y - epsilon && p2.y <= y + epsilon)) {
+                const yDiff = p2.y - p1.y;
+                
+                // Avoid division by zero for horizontal edges
+                if (Math.abs(yDiff) > epsilon) {
+                    // Calculate intersection x coordinate
+                    const intersectionX = p1.x + (y - p1.y) * (p2.x - p1.x) / yDiff;
+                    intersections.push(intersectionX);
+                }
             }
         }
         
@@ -993,7 +1009,7 @@ class BezierCurveDemo {
     shouldDrawTriangle(startPoint, endPoint) {
         const dx = endPoint.x - startPoint.x;
         const dy = endPoint.y - startPoint.y;
-        return Math.abs(dx) > 1 && Math.abs(dy) > 1;
+        return Math.abs(dx) > 0.1 * this.gridSize && Math.abs(dy) > 0.1 * this.gridSize;
     }
 
     // Draw right triangles showing the angular segments' geometric structure
@@ -1193,7 +1209,7 @@ class BezierCurveDemo {
             const dy = endPoint.y - startPoint.y;
             
             // Only process segments that form meaningful rectangles
-            if (Math.abs(dx) > 1 && Math.abs(dy) > 1) {
+            if (Math.abs(dx) > 0.1 * this.gridSize && Math.abs(dy) >  0.1 * this.gridSize) {
                 this.markRectangleGridCells(startPoint, endPoint, occupationGrid);
             }
         }
@@ -1666,10 +1682,6 @@ class BezierCurveDemo {
         
         const wedgeWidth = Math.max(1, Math.round(triangleWidth));
         const wedgeHeight = Math.max(1, Math.round(triangleHeight));
-        
-        const positionOffsetX = (wedgeWidth % 2 === 0) ? -1 : 0;
-        const positionOffsetY = (wedgeHeight % 2 === 0) ? 1 : 0;
-        
         bricks.push({
             asset_name_index: 1,
             size: [wedgeWidth, wedgeHeight, this.brickHeight],
@@ -1699,10 +1711,6 @@ class BezierCurveDemo {
             
             const brickladiaX = (centerGridX - 2 * centerX / this.gridSize);
             const brickladiaY = (centerGridY - 2 * centerY / this.gridSize);
-            
-            // Calculate position offset for odd-sized bricks
-            const positionOffsetX = (fillBrick.width % 2 === 0) ? -1 : 0;
-            const positionOffsetY = (fillBrick.height % 2 === 0) ? 1 : 0;
             
             bricks.push({
                 asset_name_index: 0, // Use regular microbrick for fill
