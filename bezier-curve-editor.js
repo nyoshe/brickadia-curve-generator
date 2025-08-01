@@ -1593,65 +1593,21 @@ class BezierCurveDemo {
         
         // Then optimize right boundary avoiding occupied cells
         const simplifiedRightPoints = this.createSmoothAngularPath(allRawRightPoints, occupationGrid);
+        this.markTriangleOccupation(simplifiedRightPoints, occupationGrid, 'right');
+        
+        // Calculate fill bricks using the same logic as the visual representation
+        const fillGrid = this.createFillGrid(simplifiedLeftPoints, simplifiedRightPoints, occupationGrid);
+        const fillBricks = this.findOptimalFillBricks(fillGrid);
+        
+        // Update the current fill bricks to match what will be exported
+        this.currentFillBricks = fillBricks;
         
         return {
             leftPoints: simplifiedLeftPoints,
             rightPoints: simplifiedRightPoints
         };
     }
-    
-    // Create a Brickadia save object from curve points
-    createBrickadaSave(curvePoints) {
-        const centerX = this.canvas.width / 2;
-        const centerY = this.canvas.height / 2;
-        const bricks = [];
-        
-        for (let index = 0; index < curvePoints.length; index++) {
-            const point = curvePoints[index];
-            const prevPoint = index > 0 ? curvePoints[index - 1] : null;
-            const nextPoint = index < curvePoints.length - 1 ? curvePoints[index + 1] : null;
-            
-            const brickladiaX = Math.round((point.x - centerX) / this.gridSize);
-            const brickladiaY = Math.round((point.y - centerY) / this.gridSize);
-            const brickladiaZ = 0;
 
-            let useWedge = false;
-            let wedgeRotation = 0;
-            let wedgeDirection = 4;
-            
-            if (prevPoint && nextPoint) {
-                const dx1 = point.x - prevPoint.x;
-                const dy1 = point.y - prevPoint.y;
-                const dx2 = nextPoint.x - point.x;
-                const dy2 = nextPoint.y - point.y;
-                
-                if (this.shouldUseWedgeForPoint(dx1, dy1, dx2, dy2)) {
-                    useWedge = true;
-                    const wedgeOrientation = this.getWedgeRotationForDirections(dx1, dy1, dx2, dy2);
-                    wedgeRotation = wedgeOrientation.rotation;
-                    wedgeDirection = wedgeOrientation.direction;
-                }
-            }
-
-            bricks.push({
-                asset_name_index: useWedge ? 1 : 0,
-                size: [1, 1, this.brickHeight],
-                position: [brickladiaX * 2 + 1, brickladiaY * 2 + 1, (this.brickHeight - 1) * 2 + 1],
-                direction: useWedge ? wedgeDirection : 4,
-                rotation: useWedge ? wedgeRotation : 0,
-                collision: true,
-                visibility: true,
-                material_index: 0,
-                material_intensity: 5,
-                physical_index: 0,
-                color: useWedge ? 1 : 0, // Use wedge color (index 1) for wedges, fill color (index 0) for regular bricks
-                owner_index: 1
-            });
-        }
-        
-        return this.createBrickadiaBaseStructure(bricks, `Bezier curve with ${curvePoints.length} microbricks (cubes and wedges). Generated from curve editor.`);
-    }
-    
     // Create a Brickadia save object from curve segments (using same logic as triangle drawing)
     createBrickadaSaveFromSegments(curveSegments) {
         const centerX = this.canvas.width / 2;
@@ -1711,8 +1667,8 @@ class BezierCurveDemo {
         const wedgeWidth = Math.max(1, Math.round(triangleWidth));
         const wedgeHeight = Math.max(1, Math.round(triangleHeight));
         
-        const positionOffsetX = (wedgeWidth % 2 === 1) ? 1 : 0;
-        const positionOffsetY = -(wedgeHeight % 2 === 1) ? 1 : 0;
+        const positionOffsetX = (wedgeWidth % 2 === 0) ? -1 : 0;
+        const positionOffsetY = (wedgeHeight % 2 === 0) ? 1 : 0;
         
         bricks.push({
             asset_name_index: 1,
@@ -1745,8 +1701,8 @@ class BezierCurveDemo {
             const brickladiaY = Math.round((centerGridY * this.gridSize - centerY) / this.gridSize);
             
             // Calculate position offset for odd-sized bricks
-            const positionOffsetX = (fillBrick.width % 2 === 1) ? 1 : 0;
-            const positionOffsetY = (fillBrick.height % 2 === 1) ? 1 : 0;
+            const positionOffsetX = (fillBrick.width % 2 === 0) ? -1 : 0;
+            const positionOffsetY = (fillBrick.height % 2 === 0) ? 1 : 0;
             
             bricks.push({
                 asset_name_index: 0, // Use regular microbrick for fill
@@ -1772,10 +1728,7 @@ class BezierCurveDemo {
         // Normalize directions to determine which neighbors would be present
         const ndx = Math.sign(dx);
         const ndy = Math.sign(dy);
-        
-        // Account for Y-axis flip in Brickadia coordinates
-        const flippedNdy = -ndy;
-        
+
         // Based on the wedge sphere example, wedge rotations are:
         // 0 = West + North neighbors (0b1100)
         // 1 = North + East neighbors (0b0110)  
@@ -1802,7 +1755,7 @@ class BezierCurveDemo {
                 return { rotation: 0, direction: 4 };
             } else if (ndx < 0 && ndy < 0) {
                 // Moving left and up (canvas) = left and down (Brickadia) - West + North corner
-                return { rotation: 3, direction: 5 };
+                return { rotation: 0, direction: 5 };
             }
         } else {
             // Right side triangles - wedge should fill the inner corner (opposite from left)
@@ -1817,7 +1770,7 @@ class BezierCurveDemo {
                 return { rotation: 2, direction: 4 };
             } else if (ndx < 0 && ndy < 0) {
                 // Moving left and up (canvas) = left and down (Brickadia) - South + East corner
-                return { rotation: 1, direction: 4 };
+                return { rotation: 2, direction: 5 };
             }
         }
         
