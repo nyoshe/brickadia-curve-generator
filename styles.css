@@ -143,6 +143,15 @@ input[type="checkbox"] {
     max-width: 100%;
     max-height: 100%;
     display: block;
+    
+    /* Prevent default drag and selection behavior */
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+    user-select: none;
+    -webkit-user-drag: none;
+    -moz-user-drag: none;
+    -webkit-touch-callout: none;
 }
 
 .info {

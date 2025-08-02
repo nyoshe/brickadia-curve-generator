@@ -18,6 +18,21 @@ class BezierCurveDemo {
             zoom: 20   // Pixels per grid unit (1 grid unit = 1x1 internal grid)
         };
         
+        // Cache for expensive curve calculations
+        this.curveCache = {
+            isDirty: true,
+            stepSize: null,
+            allRawLeftPoints: null,
+            allRawRightPoints: null,
+            occupationGrid: null,
+            simplifiedLeftPoints: null,
+            simplifiedRightPoints: null,
+            fillBricks: null
+        };
+        
+        // Throttle drawing during panning for better performance
+        this.drawPending = false;
+        
         // Internal grid is always 1x1, but displayed size depends on zoom
         this.internalGridSize = 1;
         this.segmentCount = 1;
@@ -148,6 +163,18 @@ class BezierCurveDemo {
         this.canvas.addEventListener('mousemove', this.onMouseMove.bind(this));
         this.canvas.addEventListener('mouseup', this.onMouseUp.bind(this));
         
+        // Prevent default drag behavior that can interfere with custom dragging
+        this.canvas.addEventListener('dragstart', (e) => {
+            e.preventDefault();
+            return false;
+        });
+        
+        // Prevent image dragging and selection
+        this.canvas.addEventListener('selectstart', (e) => {
+            e.preventDefault();
+            return false;
+        });
+        
         this.canvas.addEventListener('touchstart', this.onTouchStart.bind(this));
         this.canvas.addEventListener('touchmove', this.onTouchMove.bind(this));
         this.canvas.addEventListener('touchend', this.onTouchEnd.bind(this));
@@ -183,12 +210,14 @@ class BezierCurveDemo {
         document.getElementById('curveWidth').addEventListener('input', (e) => {
             this.curveWidthInGrids = Math.max(1, parseInt(e.target.value));
             document.getElementById('curveWidthInput').value = this.curveWidthInGrids;
+            this.invalidateCurveCache();
             this.draw();
         });
         
         document.getElementById('curveWidthInput').addEventListener('input', (e) => {
             this.curveWidthInGrids = Math.max(1, Math.min(10, parseInt(e.target.value) || 1));
             document.getElementById('curveWidth').value = this.curveWidthInGrids;
+            this.invalidateCurveCache();
             this.draw();
         });
         
@@ -268,6 +297,22 @@ class BezierCurveDemo {
         });
     }
     
+    // Invalidate the curve cache when curve data changes
+    invalidateCurveCache() {
+        this.curveCache.isDirty = true;
+    }
+    
+    // Throttled draw method for smooth panning
+    drawThrottled() {
+        if (!this.drawPending) {
+            this.drawPending = true;
+            requestAnimationFrame(() => {
+                this.draw();
+                this.drawPending = false;
+            });
+        }
+    }
+    
     getRGBColorString(rgbColor) {
         return `rgb(${rgbColor.r}, ${rgbColor.g}, ${rgbColor.b})`;
     }
@@ -313,6 +358,9 @@ class BezierCurveDemo {
             this.segments[i].start.x = this.segments[i - 1].end.x;
             this.segments[i].start.y = this.segments[i - 1].end.y;
         }
+        
+        // Invalidate cache when segments change
+        this.invalidateCurveCache();
     }
     
     snapToGrid(point) {
@@ -508,6 +556,8 @@ class BezierCurveDemo {
     }
     
     onMouseDown(e) {
+        e.preventDefault(); // Prevent default drag behavior
+        
         const pos = this.getMousePos(e);
         const screenPos = this.getScreenMousePos(e);
         
@@ -516,7 +566,6 @@ class BezierCurveDemo {
             this.isPanning = true;
             this.lastPanPoint = screenPos;
             this.canvas.style.cursor = 'grabbing';
-            e.preventDefault();
             return;
         }
         
@@ -538,6 +587,8 @@ class BezierCurveDemo {
     }
     
     onMouseMove(e) {
+        e.preventDefault(); // Prevent default behavior during dragging
+        
         const pos = this.getMousePos(e);
         const screenPos = this.getScreenMousePos(e);
         
@@ -547,7 +598,7 @@ class BezierCurveDemo {
             const deltaY = screenPos.y - this.lastPanPoint.y;
             this.panCamera(deltaX, deltaY);
             this.lastPanPoint = screenPos;
-            this.draw();
+            this.drawThrottled();
         } else if (this.isDragging && this.dragPoint) {
             const snappedPos = this.snapToGrid(pos);
             this.dragPoint.point.x = snappedPos.x;
@@ -555,6 +606,9 @@ class BezierCurveDemo {
             
             // Ensure continuity between segments
             this.maintainContinuity();
+            
+            // Invalidate cache when control points change
+            this.invalidateCurveCache();
             this.draw();
         } else {
             // Change cursor when hovering over control points
@@ -723,7 +777,7 @@ class BezierCurveDemo {
         
         this.ctx.strokeStyle = '#e0e0e0';
         this.ctx.lineWidth = 1;
-        this.ctx.setLineDash([2, 2]);
+        this.ctx.setLineDash([]);
         
         const bounds = this.getVisibleWorldBounds();
         const displayGridSize = this.getDisplayGridSize();
@@ -853,25 +907,20 @@ class BezierCurveDemo {
     }
     
     drawCurveWidth() {
+        // Check if we need to recalculate curve data
+        if (this.curveCache.isDirty) {
+            this.recalculateCurveData();
+        }
+        
+        // Use cached data for drawing
         this.ctx.strokeStyle = 'rgba(52, 152, 219, 0.3)';
         this.ctx.fillStyle = 'rgba(52, 152, 219, 0.1)';
         this.ctx.lineWidth = 2;
         
-        const { stepSize } = this.generateCurveParameters();
-        const { allRawLeftPoints, allRawRightPoints } = this.generateBoundaryPoints(stepSize);
-        
-        // Second pass: create smooth angular segments with overlap prevention for the entire curve
-        // First, create occupation grid and optimize left boundary
-        const occupationGrid = this.createOccupationGrid();
-        const simplifiedLeftPoints = this.createSmoothAngularPath(allRawLeftPoints, occupationGrid);
-        this.markTriangleOccupation(simplifiedLeftPoints, occupationGrid, 'left');
-        
-        // Then optimize right boundary avoiding occupied cells
-        const simplifiedRightPoints = this.createSmoothAngularPath(allRawRightPoints, occupationGrid);
-        this.markTriangleOccupation(simplifiedRightPoints, occupationGrid, 'right');
-        
-        // Store occupation grid for visualization
-        this.currentOccupationGrid = occupationGrid;
+        const simplifiedLeftPoints = this.curveCache.simplifiedLeftPoints;
+        const simplifiedRightPoints = this.curveCache.simplifiedRightPoints;
+        const allRawLeftPoints = this.curveCache.allRawLeftPoints;
+        const allRawRightPoints = this.curveCache.allRawRightPoints;
         
         // Draw the original smooth curve boundaries for comparison
         if (this.showOriginalCurve) {
@@ -903,15 +952,51 @@ class BezierCurveDemo {
             }
             
             // Draw occupied grid cells
-            if (this.showOccupiedCells && this.currentOccupationGrid) {
-                this.drawOccupiedCells(this.currentOccupationGrid);
+            if (this.showOccupiedCells && this.curveCache.occupationGrid) {
+                this.drawOccupiedCells(this.curveCache.occupationGrid);
             }
             
             // Draw fill bricks that will fill the gaps
-            if (this.showFillBricks && this.currentOccupationGrid) {
-                this.drawFillBricks(simplifiedLeftPoints, simplifiedRightPoints, this.currentOccupationGrid);
+            if (this.showFillBricks && this.curveCache.fillBricks) {
+                this.drawFillBricks(simplifiedLeftPoints, simplifiedRightPoints, this.curveCache.occupationGrid);
             }
         }
+    }
+    
+    // Recalculate all expensive curve data and cache it
+    recalculateCurveData() {
+        const { stepSize } = this.generateCurveParameters();
+        const { allRawLeftPoints, allRawRightPoints } = this.generateBoundaryPoints(stepSize);
+        
+        // Second pass: create smooth angular segments with overlap prevention for the entire curve
+        // First, create occupation grid and optimize left boundary
+        const occupationGrid = this.createOccupationGrid();
+        const simplifiedLeftPoints = this.createSmoothAngularPath(allRawLeftPoints, occupationGrid);
+        this.markTriangleOccupation(simplifiedLeftPoints, occupationGrid, 'left');
+        
+        // Then optimize right boundary avoiding occupied cells
+        const simplifiedRightPoints = this.createSmoothAngularPath(allRawRightPoints, occupationGrid);
+        this.markTriangleOccupation(simplifiedRightPoints, occupationGrid, 'right');
+        
+        // Calculate fill bricks
+        const fillGrid = this.createFillGrid(simplifiedLeftPoints, simplifiedRightPoints, occupationGrid);
+        const fillBricks = this.findOptimalFillBricks(fillGrid);
+        
+        // Cache all the expensive calculations
+        this.curveCache = {
+            isDirty: false,
+            stepSize: stepSize,
+            allRawLeftPoints: allRawLeftPoints,
+            allRawRightPoints: allRawRightPoints,
+            occupationGrid: occupationGrid,
+            simplifiedLeftPoints: simplifiedLeftPoints,
+            simplifiedRightPoints: simplifiedRightPoints,
+            fillBricks: fillBricks
+        };
+        
+        // Store for other methods that need them
+        this.currentOccupationGrid = occupationGrid;
+        this.currentFillBricks = fillBricks;
     }
     
     drawOccupiedCells(occupationGrid) {
@@ -930,8 +1015,8 @@ class BezierCurveDemo {
     }
 
     drawFillBricks(leftPoints, rightPoints, occupationGrid) {
-        const fillGrid = this.createFillGrid(leftPoints, rightPoints, occupationGrid);
-        const fillBricks = this.findOptimalFillBricks(fillGrid);
+        // Use cached fill bricks instead of recalculating
+        const fillBricks = this.curveCache.fillBricks;
         
         this.currentFillBricks = fillBricks;
         
@@ -1906,6 +1991,8 @@ class BezierCurveDemo {
             segment.cp2 = cp2;
         });
         
+        // Invalidate cache when segments change
+        this.invalidateCurveCache();
         this.draw();
     }
     
@@ -1984,29 +2071,14 @@ class BezierCurveDemo {
     
     // Get all curve segments using the same angular approximation as the visual representation
     getAllCurveSegments() {
-        const { stepSize } = this.generateCurveParameters();
-        const { allRawLeftPoints, allRawRightPoints } = this.generateBoundaryPoints(stepSize);
-        
-        // Second pass: create smooth angular segments with overlap prevention for the entire curve
-        // First, create occupation grid and optimize left boundary
-        const occupationGrid = this.createOccupationGrid();
-        const simplifiedLeftPoints = this.createSmoothAngularPath(allRawLeftPoints, occupationGrid);
-        this.markTriangleOccupation(simplifiedLeftPoints, occupationGrid, 'left');
-        
-        // Then optimize right boundary avoiding occupied cells
-        const simplifiedRightPoints = this.createSmoothAngularPath(allRawRightPoints, occupationGrid);
-        this.markTriangleOccupation(simplifiedRightPoints, occupationGrid, 'right');
-        
-        // Calculate fill bricks using the same logic as the visual representation
-        const fillGrid = this.createFillGrid(simplifiedLeftPoints, simplifiedRightPoints, occupationGrid);
-        const fillBricks = this.findOptimalFillBricks(fillGrid);
-        
-        // Update the current fill bricks to match what will be exported
-        this.currentFillBricks = fillBricks;
+        // Ensure cache is up to date
+        if (this.curveCache.isDirty) {
+            this.recalculateCurveData();
+        }
         
         return {
-            leftPoints: simplifiedLeftPoints,
-            rightPoints: simplifiedRightPoints
+            leftPoints: this.curveCache.simplifiedLeftPoints,
+            rightPoints: this.curveCache.simplifiedRightPoints
         };
     }
 
