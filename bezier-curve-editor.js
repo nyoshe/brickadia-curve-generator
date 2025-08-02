@@ -5,10 +5,21 @@ class BezierCurveDemo {
         this.ctx = this.canvas.getContext('2d');
         this.isDragging = false;
         this.dragPoint = null;
+        this.isPanning = false;
+        this.lastPanPoint = null;
         this.showControlLines = true;
         this.showControlPoints = true;
         this.gridSnap = true;
-        this.gridSize = 20;
+        
+        // Viewport/Camera properties for pan and zoom
+        this.camera = {
+            x: 0,      // Camera position in world coordinates
+            y: 0,
+            zoom: 20   // Pixels per grid unit (1 grid unit = 1x1 internal grid)
+        };
+        
+        // Internal grid is always 1x1, but displayed size depends on zoom
+        this.internalGridSize = 1;
         this.segmentCount = 1;
         this.curveWidthInGrids = 2;
         this.brickHeight = 1;
@@ -23,8 +34,17 @@ class BezierCurveDemo {
         this.wedgeColor = { r: 255, g: 0, b: 0 };
         
         this.resizeCanvas();
+        this.initializeDefaultView();
         this.generateBezierSegments();
         this.init();
+    }
+    
+    initializeDefaultView() {
+        // Set up a reasonable initial view
+        // Center the camera and set up initial curve area
+        this.camera.x = 15; // Center around x=15 in world coordinates
+        this.camera.y = 10; // Center around y=10 in world coordinates
+        this.camera.zoom = 20; // 20 pixels per grid unit
     }
     
     init() {
@@ -67,8 +87,6 @@ class BezierCurveDemo {
         document.getElementById('curveWidthInput').value = this.curveWidthInGrids;
         document.getElementById('brickHeight').value = this.brickHeight;
         document.getElementById('brickHeightInput').value = this.brickHeight;
-        document.getElementById('gridSize').value = this.gridSize;
-        document.getElementById('gridSizeInput').value = this.gridSize;
         
         document.getElementById('showControlLines').checked = this.showControlLines;
         document.getElementById('showControlPoints').checked = this.showControlPoints;
@@ -109,7 +127,6 @@ class BezierCurveDemo {
         
         setTimeout(() => {
             this.resizeCanvas();
-            this.generateBezierSegments();
             this.draw();
         }, 10);
     }
@@ -160,18 +177,6 @@ class BezierCurveDemo {
         
         document.getElementById('showControlPoints').addEventListener('change', (e) => {
             this.showControlPoints = e.target.checked;
-            this.draw();
-        });
-        
-        document.getElementById('gridSize').addEventListener('input', (e) => {
-            this.gridSize = parseInt(e.target.value);
-            document.getElementById('gridSizeInput').value = this.gridSize;
-            this.draw();
-        });
-        
-        document.getElementById('gridSizeInput').addEventListener('input', (e) => {
-            this.gridSize = Math.max(1, parseInt(e.target.value) || 1);
-            document.getElementById('gridSize').value = this.gridSize;
             this.draw();
         });
         
@@ -253,6 +258,14 @@ class BezierCurveDemo {
                 this.draw();
             });
         });
+        
+        // Pan and zoom event listeners
+        this.canvas.addEventListener('wheel', this.onWheel.bind(this), { passive: false });
+        
+        // Add right-click pan support
+        this.canvas.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+        });
     }
     
     getRGBColorString(rgbColor) {
@@ -265,22 +278,32 @@ class BezierCurveDemo {
     
     generateBezierSegments() {
         this.segments = [];
-        const canvasWidth = this.canvas.width;
-        const canvasHeight = this.canvas.height;
         
-        const marginX = Math.max(50, canvasWidth * 0.08);
-        const marginY = Math.max(50, canvasHeight * 0.1);
-        const segmentWidth = (canvasWidth - 2 * marginX) / this.segmentCount;
+        // Generate segments in a fixed area in world coordinates
+        // Use fixed coordinates that don't depend on camera position
+        const worldWidth = 20; // Fixed width in world units
+        const worldHeight = 15; // Fixed height in world units
+        
+        // Fixed center point in world coordinates
+        const fixedCenterX = 15;
+        const fixedCenterY = 10;
+        
+        const startX = fixedCenterX - worldWidth / 2;
+        const endX = fixedCenterX + worldWidth / 2;
+        const centerY = fixedCenterY;
+        
+        const marginX = worldWidth * 0.1;
+        const marginY = worldHeight * 0.2;
+        const segmentWidth = (worldWidth - 2 * marginX) / this.segmentCount;
         
         for (let i = 0; i < this.segmentCount; i++) {
-            const startX = marginX + (i * segmentWidth);
-            const endX = marginX + ((i + 1) * segmentWidth);
-            const centerY = canvasHeight / 2;
+            const segmentStartX = startX + marginX + (i * segmentWidth);
+            const segmentEndX = startX + marginX + ((i + 1) * segmentWidth);
             
-            const start = this.snapToGrid({ x: startX, y: centerY });
-            const end = this.snapToGrid({ x: endX, y: centerY });
-            const cp1 = this.snapToGrid({ x: startX + segmentWidth * 0.25, y: centerY - marginY });
-            const cp2 = this.snapToGrid({ x: startX + segmentWidth * 0.75, y: centerY + marginY });
+            const start = this.snapToGrid({ x: segmentStartX, y: centerY });
+            const end = this.snapToGrid({ x: segmentEndX, y: centerY });
+            const cp1 = this.snapToGrid({ x: segmentStartX + segmentWidth * 0.25, y: centerY - marginY });
+            const cp2 = this.snapToGrid({ x: segmentStartX + segmentWidth * 0.75, y: centerY + marginY });
             
             this.segments.push({ start, cp1, cp2, end });
         }
@@ -296,8 +319,8 @@ class BezierCurveDemo {
         if (!this.gridSnap) return point;
         
         return {
-            x: Math.round(point.x / this.gridSize) * this.gridSize,
-            y: Math.round(point.y / this.gridSize) * this.gridSize
+            x: Math.round(point.x / this.internalGridSize) * this.internalGridSize,
+            y: Math.round(point.y / this.internalGridSize) * this.internalGridSize
         };
     }
     
@@ -344,7 +367,75 @@ class BezierCurveDemo {
         return { x: -tangent.y, y: tangent.x };
     }
     
+    // Coordinate transformation functions
+    
+    // Convert screen coordinates to world coordinates
+    screenToWorld(screenPoint) {
+        return {
+            x: (screenPoint.x - this.canvas.width / 2) / this.camera.zoom + this.camera.x,
+            y: (screenPoint.y - this.canvas.height / 2) / this.camera.zoom + this.camera.y
+        };
+    }
+    
+    // Convert world coordinates to screen coordinates
+    worldToScreen(worldPoint) {
+        return {
+            x: (worldPoint.x - this.camera.x) * this.camera.zoom + this.canvas.width / 2,
+            y: (worldPoint.y - this.camera.y) * this.camera.zoom + this.canvas.height / 2
+        };
+    }
+    
+    // Get the current display size of a grid cell in screen pixels
+    getDisplayGridSize() {
+        return this.camera.zoom;
+    }
+    
+    // Get the visible world bounds
+    getVisibleWorldBounds() {
+        const halfWidth = this.canvas.width / (2 * this.camera.zoom);
+        const halfHeight = this.canvas.height / (2 * this.camera.zoom);
+        return {
+            left: this.camera.x - halfWidth,
+            right: this.camera.x + halfWidth,
+            top: this.camera.y - halfHeight,
+            bottom: this.camera.y + halfHeight
+        };
+    }
+    
+    // Pan the camera by screen pixel amounts
+    panCamera(deltaX, deltaY) {
+        this.camera.x -= deltaX / this.camera.zoom;
+        this.camera.y -= deltaY / this.camera.zoom;
+    }
+    
+    // Zoom the camera around a screen point
+    zoomCamera(factor, screenPoint) {
+        const worldPoint = this.screenToWorld(screenPoint);
+        this.camera.zoom *= factor;
+        
+        // Clamp zoom to reasonable bounds
+        this.camera.zoom = Math.max(1, Math.min(200, this.camera.zoom));
+        
+        // Adjust camera position to zoom around the specified point
+        const newWorldPoint = this.screenToWorld(screenPoint);
+        this.camera.x += worldPoint.x - newWorldPoint.x;
+        this.camera.y += worldPoint.y - newWorldPoint.y;
+    }
+    
     getMousePos(e) {
+        const rect = this.canvas.getBoundingClientRect();
+        const scaleX = this.canvas.width / rect.width;
+        const scaleY = this.canvas.height / rect.height;
+        
+        const screenPos = {
+            x: (e.clientX - rect.left) * scaleX,
+            y: (e.clientY - rect.top) * scaleY
+        };
+        
+        return this.screenToWorld(screenPos);
+    }
+    
+    getScreenMousePos(e) {
         const rect = this.canvas.getBoundingClientRect();
         const scaleX = this.canvas.width / rect.width;
         const scaleY = this.canvas.height / rect.height;
@@ -360,6 +451,19 @@ class BezierCurveDemo {
         const scaleX = this.canvas.width / rect.width;
         const scaleY = this.canvas.height / rect.height;
         
+        const screenPos = {
+            x: (e.touches[0].clientX - rect.left) * scaleX,
+            y: (e.touches[0].clientY - rect.top) * scaleY
+        };
+        
+        return this.screenToWorld(screenPos);
+    }
+    
+    getScreenTouchPos(e) {
+        const rect = this.canvas.getBoundingClientRect();
+        const scaleX = this.canvas.width / rect.width;
+        const scaleY = this.canvas.height / rect.height;
+        
         return {
             x: (e.touches[0].clientX - rect.left) * scaleX,
             y: (e.touches[0].clientY - rect.top) * scaleY
@@ -367,7 +471,8 @@ class BezierCurveDemo {
     }
     
     findNearestPoint(pos) {
-        const threshold = 15;
+        // Threshold in world coordinates - scale with zoom level
+        const threshold = 15 / this.camera.zoom;
         let nearestPoint = null;
         let nearestDistance = Infinity;
         
@@ -404,19 +509,46 @@ class BezierCurveDemo {
     
     onMouseDown(e) {
         const pos = this.getMousePos(e);
-        const nearestPoint = this.findNearestPoint(pos);
+        const screenPos = this.getScreenMousePos(e);
         
-        if (nearestPoint) {
-            this.isDragging = true;
-            this.dragPoint = nearestPoint;
+        // Right click or middle click for panning
+        if (e.button === 2 || e.button === 1) {
+            this.isPanning = true;
+            this.lastPanPoint = screenPos;
             this.canvas.style.cursor = 'grabbing';
+            e.preventDefault();
+            return;
+        }
+        
+        // Left click for control point dragging
+        if (e.button === 0) {
+            const nearestPoint = this.findNearestPoint(pos);
+            
+            if (nearestPoint) {
+                this.isDragging = true;
+                this.dragPoint = nearestPoint;
+                this.canvas.style.cursor = 'grabbing';
+            } else {
+                // Start panning if not clicking on a control point
+                this.isPanning = true;
+                this.lastPanPoint = screenPos;
+                this.canvas.style.cursor = 'grabbing';
+            }
         }
     }
     
     onMouseMove(e) {
         const pos = this.getMousePos(e);
+        const screenPos = this.getScreenMousePos(e);
         
-        if (this.isDragging && this.dragPoint) {
+        if (this.isPanning && this.lastPanPoint) {
+            // Pan the camera
+            const deltaX = screenPos.x - this.lastPanPoint.x;
+            const deltaY = screenPos.y - this.lastPanPoint.y;
+            this.panCamera(deltaX, deltaY);
+            this.lastPanPoint = screenPos;
+            this.draw();
+        } else if (this.isDragging && this.dragPoint) {
             const snappedPos = this.snapToGrid(pos);
             this.dragPoint.point.x = snappedPos.x;
             this.dragPoint.point.y = snappedPos.y;
@@ -434,7 +566,19 @@ class BezierCurveDemo {
     onMouseUp(e) {
         this.isDragging = false;
         this.dragPoint = null;
+        this.isPanning = false;
+        this.lastPanPoint = null;
         this.canvas.style.cursor = 'crosshair';
+    }
+    
+    onWheel(e) {
+        e.preventDefault();
+        
+        const screenPos = this.getScreenMousePos(e);
+        const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
+        
+        this.zoomCamera(zoomFactor, screenPos);
+        this.draw();
     }
     
     // Touch events
@@ -469,12 +613,18 @@ class BezierCurveDemo {
     }
     
     drawBezierSegment(segment) {
+        // Convert world coordinates to screen coordinates
+        const startScreen = this.worldToScreen(segment.start);
+        const cp1Screen = this.worldToScreen(segment.cp1);
+        const cp2Screen = this.worldToScreen(segment.cp2);
+        const endScreen = this.worldToScreen(segment.end);
+        
         this.ctx.beginPath();
-        this.ctx.moveTo(segment.start.x, segment.start.y);
+        this.ctx.moveTo(startScreen.x, startScreen.y);
         this.ctx.bezierCurveTo(
-            segment.cp1.x, segment.cp1.y,
-            segment.cp2.x, segment.cp2.y,
-            segment.end.x, segment.end.y
+            cp1Screen.x, cp1Screen.y,
+            cp2Screen.x, cp2Screen.y,
+            endScreen.x, endScreen.y
         );
         this.ctx.strokeStyle = '#e74c3c';
         this.ctx.lineWidth = 1;
@@ -484,20 +634,25 @@ class BezierCurveDemo {
     drawControlLines(segment) {
         if (!this.showControlLines) return;
         
+        const startScreen = this.worldToScreen(segment.start);
+        const cp1Screen = this.worldToScreen(segment.cp1);
+        const cp2Screen = this.worldToScreen(segment.cp2);
+        const endScreen = this.worldToScreen(segment.end);
+        
         this.ctx.strokeStyle = '#95a5a6';
         this.ctx.lineWidth = 1;
         this.ctx.setLineDash([5, 5]);
         
         // Line from start to first control point
         this.ctx.beginPath();
-        this.ctx.moveTo(segment.start.x, segment.start.y);
-        this.ctx.lineTo(segment.cp1.x, segment.cp1.y);
+        this.ctx.moveTo(startScreen.x, startScreen.y);
+        this.ctx.lineTo(cp1Screen.x, cp1Screen.y);
         this.ctx.stroke();
         
         // Line from second control point to end
         this.ctx.beginPath();
-        this.ctx.moveTo(segment.cp2.x, segment.cp2.y);
-        this.ctx.lineTo(segment.end.x, segment.end.y);
+        this.ctx.moveTo(cp2Screen.x, cp2Screen.y);
+        this.ctx.lineTo(endScreen.x, endScreen.y);
         this.ctx.stroke();
         
         this.ctx.setLineDash([]);
@@ -514,9 +669,11 @@ class BezierCurveDemo {
         ];
         
         points.forEach(({ point, color, type }) => {
+            const screenPoint = this.worldToScreen(point);
+            
             // Draw the control point circle
             this.ctx.beginPath();
-            this.ctx.arc(point.x, point.y, type === 'anchor' ? 8 : 6, 0, 2 * Math.PI);
+            this.ctx.arc(screenPoint.x, screenPoint.y, type === 'anchor' ? 8 : 6, 0, 2 * Math.PI);
             this.ctx.fillStyle = color;
             this.ctx.fill();
             this.ctx.strokeStyle = '#fff';
@@ -524,8 +681,8 @@ class BezierCurveDemo {
             this.ctx.stroke();
             
             // Draw grid coordinates
-            const gridX = Math.round(point.x / this.gridSize);
-            const gridY = Math.round(point.y / this.gridSize);
+            const gridX = Math.round(point.x / this.internalGridSize);
+            const gridY = Math.round(point.y / this.internalGridSize);
             const coordinateText = `(${gridX}, ${gridY})`;
             
             // Set text style
@@ -536,12 +693,12 @@ class BezierCurveDemo {
             this.ctx.lineWidth = 3;
             
             // Position text above the point
-            const textY = point.y - (type === 'anchor' ? 15 : 12);
+            const textY = screenPoint.y - (type === 'anchor' ? 15 : 12);
             
             // Draw white outline for text visibility
-            this.ctx.strokeText(coordinateText, point.x, textY);
+            this.ctx.strokeText(coordinateText, screenPoint.x, textY);
             // Draw the coordinate text
-            this.ctx.fillText(coordinateText, point.x, textY);
+            this.ctx.fillText(coordinateText, screenPoint.x, textY);
         });
     }
     
@@ -568,19 +725,30 @@ class BezierCurveDemo {
         this.ctx.lineWidth = 1;
         this.ctx.setLineDash([2, 2]);
         
+        const bounds = this.getVisibleWorldBounds();
+        const displayGridSize = this.getDisplayGridSize();
+        
+        // Calculate grid line positions in world coordinates
+        const startX = Math.floor(bounds.left / this.internalGridSize) * this.internalGridSize;
+        const endX = Math.ceil(bounds.right / this.internalGridSize) * this.internalGridSize;
+        const startY = Math.floor(bounds.top / this.internalGridSize) * this.internalGridSize;
+        const endY = Math.ceil(bounds.bottom / this.internalGridSize) * this.internalGridSize;
+        
         // Draw vertical lines
-        for (let x = 0; x <= this.canvas.width; x += this.gridSize) {
+        for (let x = startX; x <= endX; x += this.internalGridSize) {
+            const screenPos = this.worldToScreen({ x, y: 0 });
             this.ctx.beginPath();
-            this.ctx.moveTo(x, 0);
-            this.ctx.lineTo(x, this.canvas.height);
+            this.ctx.moveTo(screenPos.x, 0);
+            this.ctx.lineTo(screenPos.x, this.canvas.height);
             this.ctx.stroke();
         }
         
         // Draw horizontal lines
-        for (let y = 0; y <= this.canvas.height; y += this.gridSize) {
+        for (let y = startY; y <= endY; y += this.internalGridSize) {
+            const screenPos = this.worldToScreen({ x: 0, y });
             this.ctx.beginPath();
-            this.ctx.moveTo(0, y);
-            this.ctx.lineTo(this.canvas.width, y);
+            this.ctx.moveTo(0, screenPos.y);
+            this.ctx.lineTo(this.canvas.width, screenPos.y);
             this.ctx.stroke();
         }
         
@@ -604,12 +772,13 @@ class BezierCurveDemo {
     }
 
     generateCurveParameters() {
-        const targetSegmentLength = this.gridSize / 5;
+        // Use fixed world coordinate calculations instead of display-dependent values
+        const fixedTargetSegmentLength = this.internalGridSize / 5; // Fixed segment length in world coordinates
         const totalCurveLength = this.estimateCurveLength();
-        const targetStepsPerCurve = Math.max(1, Math.round(totalCurveLength / targetSegmentLength));
+        const targetStepsPerCurve = Math.max(1, Math.round(totalCurveLength / fixedTargetSegmentLength));
         const stepSize = 1.0 / (targetStepsPerCurve / this.segments.length);
         
-        return { targetSegmentLength, totalCurveLength, targetStepsPerCurve, stepSize };
+        return { targetSegmentLength: fixedTargetSegmentLength, totalCurveLength, targetStepsPerCurve, stepSize };
     }
 
     generateBoundaryPoints(stepSize) {
@@ -632,7 +801,7 @@ class BezierCurveDemo {
                 const tangent = this.calculateBezierTangent(segment, t);
                 const perpendicular = this.calculatePerpendicularVector(tangent);
                 
-                const halfWidth = (this.curveWidthInGrids * this.gridSize) / 2;
+                const halfWidth = (this.curveWidthInGrids * this.internalGridSize) / 2;
                 const leftPoint = {
                     x: centerPoint.x - perpendicular.x * halfWidth,
                     y: centerPoint.y - perpendicular.y * halfWidth
@@ -650,6 +819,39 @@ class BezierCurveDemo {
         return { allRawLeftPoints, allRawRightPoints };
     }
 
+    // Helper function to draw a path with world coordinates converted to screen coordinates
+    drawWorldPath(points, drawOptions = {}) {
+        if (points.length === 0) return;
+        
+        const screenPoints = points.map(p => this.worldToScreen(p));
+        
+        this.ctx.beginPath();
+        this.ctx.moveTo(screenPoints[0].x, screenPoints[0].y);
+        for (let i = 1; i < screenPoints.length; i++) {
+            this.ctx.lineTo(screenPoints[i].x, screenPoints[i].y);
+        }
+        
+        if (drawOptions.fill) {
+            this.ctx.fill();
+        }
+        if (drawOptions.stroke !== false) {
+            this.ctx.stroke();
+        }
+    }
+    
+    // Helper function to draw a rectangle in world coordinates
+    drawWorldRect(worldX, worldY, worldWidth, worldHeight) {
+        const topLeft = this.worldToScreen({ x: worldX, y: worldY });
+        const size = this.worldToScreen({ x: worldWidth, y: worldHeight });
+        const origin = this.worldToScreen({ x: 0, y: 0 });
+        
+        const screenWidth = size.x - origin.x;
+        const screenHeight = size.y - origin.y;
+        
+        this.ctx.fillRect(topLeft.x, topLeft.y, screenWidth, screenHeight);
+        this.ctx.strokeRect(topLeft.x, topLeft.y, screenWidth, screenHeight);
+    }
+    
     drawCurveWidth() {
         this.ctx.strokeStyle = 'rgba(52, 152, 219, 0.3)';
         this.ctx.fillStyle = 'rgba(52, 152, 219, 0.1)';
@@ -681,19 +883,9 @@ class BezierCurveDemo {
             // Draw outline with smooth angular segments
             this.ctx.strokeStyle = 'rgba(52, 152, 219, 0.3)';
             this.ctx.lineWidth = 2;
-            this.ctx.beginPath();
-            this.ctx.moveTo(simplifiedLeftPoints[0].x, simplifiedLeftPoints[0].y);
-            for (let i = 1; i < simplifiedLeftPoints.length; i++) {
-                this.ctx.lineTo(simplifiedLeftPoints[i].x, simplifiedLeftPoints[i].y);
-            }
-            this.ctx.stroke();
             
-            this.ctx.beginPath();
-            this.ctx.moveTo(simplifiedRightPoints[0].x, simplifiedRightPoints[0].y);
-            for (let i = 1; i < simplifiedRightPoints.length; i++) {
-                this.ctx.lineTo(simplifiedRightPoints[i].x, simplifiedRightPoints[i].y);
-            }
-            this.ctx.stroke();
+            this.drawWorldPath(simplifiedLeftPoints);
+            this.drawWorldPath(simplifiedRightPoints);
             
             // Optionally draw grid points as small circles for clarity
             if (this.showGridPoints) {
@@ -730,11 +922,8 @@ class BezierCurveDemo {
         for (let gridX = 0; gridX < occupationGrid.length; gridX++) {
             for (let gridY = 0; gridY < occupationGrid[gridX].length; gridY++) {
                 if (occupationGrid[gridX][gridY]) {
-                    const canvasX = gridX * this.gridSize;
-                    const canvasY = gridY * this.gridSize;
-                    
-                    this.ctx.fillRect(canvasX, canvasY, this.gridSize, this.gridSize);
-                    this.ctx.strokeRect(canvasX, canvasY, this.gridSize, this.gridSize);
+                    const worldPos = this.gridIndexToWorld(gridX, gridY, occupationGrid);
+                    this.drawWorldRect(worldPos.x, worldPos.y, this.internalGridSize, this.internalGridSize);
                 }
             }
         }
@@ -746,27 +935,26 @@ class BezierCurveDemo {
         
         this.currentFillBricks = fillBricks;
         
-        this.ctx.fillStyle = this.getRGBAColorString(this.fillBrickColor, 0.4);
-        this.ctx.strokeStyle = this.getRGBAColorString(this.fillBrickColor, 0.8);
-        this.ctx.lineWidth = 2;
-        
         fillBricks.forEach(brick => {
-            const x = brick.gridX * this.gridSize;
-            const y = brick.gridY * this.gridSize;
-            const width = brick.width * this.gridSize;
-            const height = brick.height * this.gridSize;
-            
-            this.ctx.fillRect(x, y, width, height);
-            this.ctx.strokeRect(x, y, width, height);
-
+            // Set fill and stroke styles for each brick
             this.ctx.fillStyle = this.getRGBAColorString(this.fillBrickColor, 0.4);
+            this.ctx.strokeStyle = this.getRGBAColorString(this.fillBrickColor, 0.8);
+            this.ctx.lineWidth = 2;
+            
+            // Calculate rectangle dimensions from start and end points
+            const worldX = brick.startPoint.x;
+            const worldY = brick.startPoint.y;
+            const worldWidth = brick.endPoint.x - brick.startPoint.x;
+            const worldHeight = brick.endPoint.y - brick.startPoint.y;
+            
+            this.drawWorldRect(worldX, worldY, worldWidth, worldHeight);
         });
     }
 
     // Create a grid that marks which cells should be filled (inside curve but not occupied by triangles)
     createFillGrid(leftPoints, rightPoints, occupationGrid) {
-        const gridWidth = Math.ceil(this.canvas.width / this.gridSize);
-        const gridHeight = Math.ceil(this.canvas.height / this.gridSize);
+        const gridWidth = occupationGrid.gridWidth;
+        const gridHeight = occupationGrid.gridHeight;
         
         // Initialize fill grid - true means should be filled, false means don't fill
         const fillGrid = [];
@@ -777,36 +965,50 @@ class BezierCurveDemo {
             }
         }
         
+        // Copy bounds information for consistency
+        fillGrid.bounds = occupationGrid.bounds;
+        fillGrid.gridWidth = gridWidth;
+        fillGrid.gridHeight = gridHeight;
+        
         // Find bounding box of the curve to limit our search area
         const boundingBox = this.getCurveBoundingBox(leftPoints, rightPoints);
-        const startGridX = Math.max(0, Math.floor(boundingBox.minX / this.gridSize));
-        const endGridX = Math.min(gridWidth, Math.ceil(boundingBox.maxX / this.gridSize));
-        const startGridY = Math.max(0, Math.floor(boundingBox.minY / this.gridSize));
-        const endGridY = Math.min(gridHeight, Math.ceil(boundingBox.maxY / this.gridSize));
+        const startGridIndex = this.worldToGridIndex(boundingBox.minX, boundingBox.minY, fillGrid);
+        const endGridIndex = this.worldToGridIndex(boundingBox.maxX, boundingBox.maxY, fillGrid);
+        
+        const startGridX = Math.max(0, startGridIndex.gridX);
+        const endGridX = Math.min(gridWidth, endGridIndex.gridX + 1);
+        const startGridY = Math.max(0, startGridIndex.gridY);
+        const endGridY = Math.min(gridHeight, endGridIndex.gridY + 1);
         
         // Use scanline algorithm for much faster filling
         for (let gridY = startGridY; gridY < endGridY; gridY++) {
-            const scanlineY = gridY * this.gridSize + this.gridSize / 2;
-            const intersections = this.findScanlineIntersections(scanlineY, leftPoints, rightPoints);
+            const worldY = fillGrid.bounds.top + gridY * this.internalGridSize + this.internalGridSize / 2;
+            const intersections = this.findScanlineIntersections(worldY, leftPoints, rightPoints);
             
             // Fill between pairs of intersections
             for (let i = 0; i < intersections.length; i += 2) {
                 if (i + 1 < intersections.length) {
-                    // Fix precision issues for small grid sizes
-                    let startX, endX;
-                    if (this.gridSize === 1) {
-                        // For grid size 1, use more precise calculations
-                        startX = Math.max(startGridX, Math.floor(intersections[i] + 0.0001));
-                        endX = Math.min(endGridX, Math.floor(intersections[i + 1] - 0.0001) + 1);
-                    } else {
-                        startX = Math.max(startGridX, Math.floor(intersections[i] / this.gridSize));
-                        endX = Math.min(endGridX, Math.ceil(intersections[i + 1] / this.gridSize));
-                    }
+                    const startWorldX = intersections[i];
+                    const endWorldX = intersections[i + 1];
                     
-                    for (let gridX = startX; gridX < endX; gridX++) {
-                        // Only fill if not occupied by triangular wedges
-                        if (!occupationGrid[gridX] || !occupationGrid[gridX][gridY]) {
-                            fillGrid[gridX][gridY] = true;
+                    // Convert world coordinates to grid indices with proper bounds checking
+                    const startGridXIndex = this.worldToGridIndex(startWorldX, worldY, fillGrid);
+                    const endGridXIndex = this.worldToGridIndex(endWorldX, worldY, fillGrid);
+                    
+                    // Be more inclusive when determining which grid cells to fill
+                    const startX = Math.max(0, Math.floor(startGridXIndex.gridX));
+                    const endX = Math.min(gridWidth - 1, Math.ceil(endGridXIndex.gridX));
+                    
+                    for (let gridX = startX; gridX <= endX; gridX++) {
+                        // Double-check that this grid cell is actually inside the curve
+                        const cellCenterX = fillGrid.bounds.left + gridX * this.internalGridSize + this.internalGridSize / 2;
+                        const cellCenterY = worldY;
+                        
+                        // Only fill if the cell center is between the intersections and not occupied
+                        if (cellCenterX >= startWorldX && cellCenterX <= endWorldX) {
+                            if (!occupationGrid[gridX] || !occupationGrid[gridX][gridY]) {
+                                fillGrid[gridX][gridY] = true;
+                            }
                         }
                     }
                 }
@@ -820,7 +1022,8 @@ class BezierCurveDemo {
     getCurveBoundingBox(leftPoints, rightPoints) {
         const allPoints = [...leftPoints, ...rightPoints];
         if (allPoints.length === 0) {
-            return { minX: 0, maxX: this.canvas.width, minY: 0, maxY: this.canvas.height };
+            // Return a reasonable default in world coordinates
+            return { minX: 0, maxX: 30, minY: 0, maxY: 20 };
         }
         
         let minX = allPoints[0].x;
@@ -836,12 +1039,12 @@ class BezierCurveDemo {
         }
         
         // Add some padding
-        const padding = this.gridSize;
+        const padding = this.internalGridSize;
         return {
-            minX: Math.max(0, minX - padding),
-            maxX: Math.min(this.canvas.width, maxX + padding),
-            minY: Math.max(0, minY - padding),
-            maxY: Math.min(this.canvas.height, maxY + padding)
+            minX: minX - padding,
+            maxX: maxX + padding,
+            minY: minY - padding,
+            maxY: maxY + padding
         };
     }
     
@@ -863,23 +1066,54 @@ class BezierCurveDemo {
             // Use a small epsilon for floating point comparisons
             const epsilon = 1e-10;
             
-            // Check if scanline intersects this edge
-            if ((p1.y <= y + epsilon && p2.y > y - epsilon) || (p1.y > y - epsilon && p2.y <= y + epsilon)) {
+            // Check if scanline intersects this edge (avoid horizontal edges)
+            const minY = Math.min(p1.y, p2.y);
+            const maxY = Math.max(p1.y, p2.y);
+            
+            if (y > minY + epsilon && y < maxY - epsilon) {
+                // Normal case: line properly crosses the edge
                 const yDiff = p2.y - p1.y;
+                const intersectionX = p1.x + (y - p1.y) * (p2.x - p1.x) / yDiff;
+                intersections.push(intersectionX);
+            } else if (Math.abs(y - p1.y) <= epsilon || Math.abs(y - p2.y) <= epsilon) {
+                // Edge case: scanline passes through a vertex
+                // Only count intersection if it's a "proper" crossing
+                const prevIdx = (i - 1 + polygon.length) % polygon.length;
+                const nextIdx = (i + 2) % polygon.length;
                 
-                // Avoid division by zero for horizontal edges
-                if (Math.abs(yDiff) > epsilon) {
-                    // Calculate intersection x coordinate
-                    const intersectionX = p1.x + (y - p1.y) * (p2.x - p1.x) / yDiff;
-                    intersections.push(intersectionX);
+                let vertexPoint, adjacentPoint1, adjacentPoint2;
+                if (Math.abs(y - p1.y) <= epsilon) {
+                    vertexPoint = p1;
+                    adjacentPoint1 = polygon[prevIdx];
+                    adjacentPoint2 = p2;
+                } else {
+                    vertexPoint = p2;
+                    adjacentPoint1 = p1;
+                    adjacentPoint2 = polygon[nextIdx];
+                }
+                
+                // Check if the two adjacent points are on opposite sides of the scanline
+                const side1 = adjacentPoint1.y > y;
+                const side2 = adjacentPoint2.y > y;
+                
+                if (side1 !== side2) {
+                    intersections.push(vertexPoint.x);
                 }
             }
         }
         
-        // Sort intersections by x coordinate
+        // Sort intersections by x coordinate and remove duplicates
         intersections.sort((a, b) => a - b);
         
-        return intersections;
+        // Remove very close intersections (likely duplicates)
+        const filteredIntersections = [];
+        for (let i = 0; i < intersections.length; i++) {
+            if (i === 0 || Math.abs(intersections[i] - intersections[i-1]) > 1e-8) {
+                filteredIntersections.push(intersections[i]);
+            }
+        }
+        
+        return filteredIntersections;
     }
     
     // Check if a point is inside a triangle using barycentric coordinates
@@ -942,6 +1176,16 @@ class BezierCurveDemo {
         // Create a working copy of the fill grid
         const workingGrid = fillGrid.map(row => [...row]);
         
+        // Count total cells that need filling for debugging
+        let totalCellsToFill = 0;
+        for (let x = 0; x < gridWidth; x++) {
+            for (let y = 0; y < gridHeight; y++) {
+                if (workingGrid[x][y]) {
+                    totalCellsToFill++;
+                }
+            }
+        }
+        
         // Greedy algorithm: find largest possible rectangles first
         for (let gridX = 0; gridX < gridWidth; gridX++) {
             for (let gridY = 0; gridY < gridHeight; gridY++) {
@@ -950,17 +1194,42 @@ class BezierCurveDemo {
                     const rect = this.findLargestRectangle(workingGrid, gridX, gridY);
                     
                     if (rect.width > 0 && rect.height > 0) {
-                        fillBricks.push(rect);
+                        // Convert grid coordinates to world coordinates
+                        const startWorld = this.gridIndexToWorld(rect.gridX, rect.gridY, fillGrid);
+                        const endWorld = this.gridIndexToWorld(rect.gridX + rect.width, rect.gridY + rect.height, fillGrid);
+                        
+                        fillBricks.push({
+                            startPoint: startWorld,
+                            endPoint: endWorld
+                        });
                         
                         // Mark the rectangle area as filled in working grid
                         for (let x = rect.gridX; x < rect.gridX + rect.width; x++) {
                             for (let y = rect.gridY; y < rect.gridY + rect.height; y++) {
-                                if (x < gridWidth && y < gridHeight) {
+                                if (x >= 0 && x < gridWidth && y >= 0 && y < gridHeight) {
                                     workingGrid[x][y] = false;
                                 }
                             }
                         }
                     }
+                }
+            }
+        }
+        
+        // Check for any remaining unfilled cells and create 1x1 bricks for them
+        for (let gridX = 0; gridX < gridWidth; gridX++) {
+            for (let gridY = 0; gridY < gridHeight; gridY++) {
+                if (workingGrid[gridX][gridY]) {
+                    // Convert grid coordinates to world coordinates
+                    const startWorld = this.gridIndexToWorld(gridX, gridY, fillGrid);
+                    const endWorld = this.gridIndexToWorld(gridX + 1, gridY + 1, fillGrid);
+                    
+                    // Create a 1x1 brick for any remaining unfilled cells
+                    fillBricks.push({
+                        startPoint: startWorld,
+                        endPoint: endWorld
+                    });
+                    workingGrid[gridX][gridY] = false;
                 }
             }
         }
@@ -976,28 +1245,42 @@ class BezierCurveDemo {
         let maxArea = 0;
         let bestRect = { gridX: startX, gridY: startY, width: 0, height: 0 };
         
-        // Try different rectangle sizes
-        for (let width = 1; startX + width <= gridWidth; width++) {
-            for (let height = 1; startY + height <= gridHeight; height++) {
-                // Check if this rectangle fits
-                let fits = true;
-                for (let x = startX; x < startX + width && fits; x++) {
-                    for (let y = startY; y < startY + height && fits; y++) {
-                        if (!grid[x][y]) {
-                            fits = false;
-                        }
-                    }
-                }
-                
-                if (fits) {
-                    const area = width * height;
-                    if (area > maxArea) {
-                        maxArea = area;
-                        bestRect = { gridX: startX, gridY: startY, width, height };
-                    }
-                } else {
-                    // If this height doesn't fit, larger heights won't fit either
+        // First, find the maximum width from this starting position
+        let maxWidth = 0;
+        for (let x = startX; x < gridWidth && grid[x][startY]; x++) {
+            maxWidth++;
+        }
+        
+        if (maxWidth === 0) {
+            return bestRect;
+        }
+        
+        // Try different heights and find the max width for each height
+        for (let height = 1; startY + height <= gridHeight; height++) {
+            // Find the maximum width that can fit at this height
+            let currentMaxWidth = maxWidth;
+            
+            // Check if all cells in the current row are available
+            for (let x = startX; x < startX + currentMaxWidth; x++) {
+                if (startY + height - 1 >= gridHeight || !grid[x][startY + height - 1]) {
+                    currentMaxWidth = x - startX;
                     break;
+                }
+            }
+            
+            if (currentMaxWidth === 0) {
+                break;
+            }
+            
+            // Update maxWidth for next iteration
+            maxWidth = Math.min(maxWidth, currentMaxWidth);
+            
+            // Try different widths for this height
+            for (let width = 1; width <= currentMaxWidth; width++) {
+                const area = width * height;
+                if (area > maxArea) {
+                    maxArea = area;
+                    bestRect = { gridX: startX, gridY: startY, width, height };
                 }
             }
         }
@@ -1009,7 +1292,7 @@ class BezierCurveDemo {
     shouldDrawTriangle(startPoint, endPoint) {
         const dx = endPoint.x - startPoint.x;
         const dy = endPoint.y - startPoint.y;
-        return Math.abs(dx) > 0.1 * this.gridSize && Math.abs(dy) > 0.1 * this.gridSize;
+        return Math.abs(dx) > 0.1 * this.internalGridSize && Math.abs(dy) > 0.1 * this.internalGridSize;
     }
 
     // Draw right triangles showing the angular segments' geometric structure
@@ -1131,26 +1414,31 @@ class BezierCurveDemo {
         const dx = endPoint.x - startPoint.x;
         const dy = endPoint.y - startPoint.y;
         
-        if (Math.abs(dx) < this.gridSize * 0.1 || Math.abs(dy) < this.gridSize * 0.1) {
+        if (Math.abs(dx) < this.internalGridSize * 0.1 || Math.abs(dy) < this.internalGridSize * 0.1) {
             return;
         }
         
         const cornerPoint = this.calculateTriangleCorner(startPoint, endPoint, side);
         
+        // Convert world coordinates to screen coordinates
+        const startScreen = this.worldToScreen(startPoint);
+        const cornerScreen = this.worldToScreen(cornerPoint);
+        const endScreen = this.worldToScreen(endPoint);
+        
         this.ctx.beginPath();
-        this.ctx.moveTo(startPoint.x, startPoint.y);
-        this.ctx.lineTo(cornerPoint.x, cornerPoint.y);
-        this.ctx.lineTo(endPoint.x, endPoint.y);
+        this.ctx.moveTo(startScreen.x, startScreen.y);
+        this.ctx.lineTo(cornerScreen.x, cornerScreen.y);
+        this.ctx.lineTo(endScreen.x, endScreen.y);
         this.ctx.closePath();
         
         this.ctx.fillStyle = this.getRGBAColorString(this.wedgeColor, 0.4);
         this.ctx.fill();
         this.ctx.stroke();
         
-        const squareSize = this.gridSize * 0.2;
+        const squareSize = this.getDisplayGridSize() * 0.2;
         this.ctx.strokeRect(
-            cornerPoint.x - squareSize/2, 
-            cornerPoint.y - squareSize/2, 
+            cornerScreen.x - squareSize/2, 
+            cornerScreen.y - squareSize/2, 
             squareSize, 
             squareSize
         );
@@ -1163,12 +1451,7 @@ class BezierCurveDemo {
         
         [leftPoints, rightPoints].forEach(points => {
             if (points.length > 1) {
-                this.ctx.beginPath();
-                this.ctx.moveTo(points[0].x, points[0].y);
-                for (let i = 1; i < points.length; i++) {
-                    this.ctx.lineTo(points[i].x, points[i].y);
-                }
-                this.ctx.stroke();
+                this.drawWorldPath(points);
             }
         });
         
@@ -1177,8 +1460,57 @@ class BezierCurveDemo {
     
     // Create a 2D occupation grid to track which grid cells are occupied by triangles
     createOccupationGrid() {
-        const gridWidth = Math.ceil(this.canvas.width / this.gridSize);
-        const gridHeight = Math.ceil(this.canvas.height / this.gridSize);
+        // Use fixed world bounds instead of visible bounds to ensure consistency
+        // Find the bounding box of all segments to define a stable grid area
+        if (this.segments.length === 0) {
+            // Fallback to a reasonable default area
+            const bounds = {
+                left: 0,
+                right: 30,
+                top: 0,
+                bottom: 20
+            };
+            const gridWidth = Math.ceil((bounds.right - bounds.left) / this.internalGridSize);
+            const gridHeight = Math.ceil((bounds.bottom - bounds.top) / this.internalGridSize);
+            
+            const grid = [];
+            for (let x = 0; x < gridWidth; x++) {
+                grid[x] = [];
+                for (let y = 0; y < gridHeight; y++) {
+                    grid[x][y] = false;
+                }
+            }
+            
+            grid.bounds = bounds;
+            grid.gridWidth = gridWidth;
+            grid.gridHeight = gridHeight;
+            return grid;
+        }
+        
+        // Calculate fixed bounds based on segment positions with some padding
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        
+        this.segments.forEach(segment => {
+            const points = [segment.start, segment.end, segment.cp1, segment.cp2];
+            points.forEach(point => {
+                minX = Math.min(minX, point.x);
+                maxX = Math.max(maxX, point.x);
+                minY = Math.min(minY, point.y);
+                maxY = Math.max(maxY, point.y);
+            });
+        });
+        
+        // Add padding for curve width
+        const padding = this.curveWidthInGrids * this.internalGridSize + 2 * this.internalGridSize;
+        const bounds = {
+            left: minX - padding,
+            right: maxX + padding,
+            top: minY - padding,
+            bottom: maxY + padding
+        };
+        
+        const gridWidth = Math.ceil((bounds.right - bounds.left) / this.internalGridSize);
+        const gridHeight = Math.ceil((bounds.bottom - bounds.top) / this.internalGridSize);
         
         // Initialize 2D array with false (unoccupied)
         const grid = [];
@@ -1188,14 +1520,28 @@ class BezierCurveDemo {
                 grid[x][y] = false;
             }
         }
+        
+        // Store grid bounds for later use
+        grid.bounds = bounds;
+        grid.gridWidth = gridWidth;
+        grid.gridHeight = gridHeight;
+        
         return grid;
     }
     
-    // Convert canvas coordinates to grid indices
-    canvasToGridIndex(x, y) {
+    // Convert world coordinates to grid indices
+    worldToGridIndex(x, y, grid) {
         return {
-            gridX: Math.floor(x / this.gridSize),
-            gridY: Math.floor(y / this.gridSize)
+            gridX: Math.floor((x - grid.bounds.left) / this.internalGridSize),
+            gridY: Math.floor((y - grid.bounds.top) / this.internalGridSize)
+        };
+    }
+    
+    // Convert grid indices to world coordinates
+    gridIndexToWorld(gridX, gridY, grid) {
+        return {
+            x: grid.bounds.left + gridX * this.internalGridSize,
+            y: grid.bounds.top + gridY * this.internalGridSize
         };
     }
     
@@ -1209,7 +1555,7 @@ class BezierCurveDemo {
             const dy = endPoint.y - startPoint.y;
             
             // Only process segments that form meaningful rectangles
-            if (Math.abs(dx) > 0.1 * this.gridSize && Math.abs(dy) >  0.1 * this.gridSize) {
+            if (Math.abs(dx) > 0.1 * this.internalGridSize && Math.abs(dy) > 0.1 * this.internalGridSize) {
                 this.markRectangleGridCells(startPoint, endPoint, occupationGrid);
             }
         }
@@ -1224,8 +1570,8 @@ class BezierCurveDemo {
         const maxY = Math.max(startPoint.y, endPoint.y);
         
         // Convert to grid coordinates
-        const startGrid = this.canvasToGridIndex(minX, minY);
-        const endGrid = this.canvasToGridIndex(maxX, maxY);
+        const startGrid = this.worldToGridIndex(minX, minY, occupationGrid);
+        const endGrid = this.worldToGridIndex(maxX, maxY, occupationGrid);
         
         // Mark all grid cells within the rectangle
         for (let gridX = startGrid.gridX; gridX < endGrid.gridX; gridX++) {
@@ -1243,16 +1589,7 @@ class BezierCurveDemo {
     }
     
     wouldTriangleOverlap(startPoint, endPoint, occupationGrid, side) {
-        const dx = endPoint.x - startPoint.x;
-        const dy = endPoint.y - startPoint.y;
-        
-        if (Math.abs(dx) <= 1 || Math.abs(dy) <= 1) return false;
-        
-        if (side === 'right') {
-            return this.wouldRectangleOverlap(startPoint, endPoint, occupationGrid);
-        }
-        
-        return false;
+        return this.wouldRectangleOverlap(startPoint, endPoint, occupationGrid);
     }
     
     wouldRectangleOverlap(startPoint, endPoint, occupationGrid) {
@@ -1260,10 +1597,11 @@ class BezierCurveDemo {
         const maxX = Math.max(startPoint.x, endPoint.x);
         const minY = Math.min(startPoint.y, endPoint.y);
         const maxY = Math.max(startPoint.y, endPoint.y);
-        
-        const startGrid = this.canvasToGridIndex(minX, minY);
-        const endGrid = this.canvasToGridIndex(maxX, maxY);
-        
+
+        // Convert to grid coordinates
+        const startGrid = this.worldToGridIndex(minX, minY, occupationGrid);
+        const endGrid = this.worldToGridIndex(maxX, maxY, occupationGrid);
+
         for (let gridX = startGrid.gridX; gridX < endGrid.gridX; gridX++) {
             for (let gridY = startGrid.gridY; gridY < endGrid.gridY; gridY++) {
                 if (gridX < 0 || gridY < 0 || 
@@ -1296,7 +1634,7 @@ class BezierCurveDemo {
         
         // Add neighboring grid points in expanding squares
         for (let r = 1; r <= radius; r++) {
-            const stepSize = this.gridSize;
+            const stepSize = this.internalGridSize;
             
             // Create a square of points at distance r from center
             for (let dx = -r * stepSize; dx <= r * stepSize; dx += stepSize) {
@@ -1347,9 +1685,9 @@ class BezierCurveDemo {
         smoothPath.push(startPoint);
         
         let currentIndex = 0;
-        const minSegmentLength = this.gridSize * 0.8;
-        const maxSegmentWidth = this.curveWidthInGrids * this.gridSize;
-        const endThreshold = this.gridSize * 2; // Distance threshold for considering we're close enough to the end
+        const minSegmentLength = this.internalGridSize * 0.8;
+        const maxSegmentWidth = this.curveWidthInGrids * this.internalGridSize;
+        const endThreshold = this.internalGridSize * 2; // Distance threshold for considering we're close enough to the end
         
         while (currentIndex < rawPoints.length - 1) {
             let bestNextIndex = currentIndex + 1;
@@ -1490,8 +1828,9 @@ class BezierCurveDemo {
         
         // Draw points on both boundaries
         [...leftPoints, ...rightPoints].forEach(point => {
+            const screenPoint = this.worldToScreen(point);
             this.ctx.beginPath();
-            this.ctx.arc(point.x, point.y, radius, 0, 2 * Math.PI);
+            this.ctx.arc(screenPoint.x, screenPoint.y, radius, 0, 2 * Math.PI);
             this.ctx.fill();
         });
     }
@@ -1502,22 +1841,25 @@ class BezierCurveDemo {
     }
     
     randomize() {
-        const margin = 50;
-        const maxX = this.canvas.width - margin;
-        const maxY = this.canvas.height - margin;
+        const bounds = this.getVisibleWorldBounds();
+        const margin = 2; // margin in world coordinates
+        const minX = bounds.left + margin;
+        const maxX = bounds.right - margin;
+        const minY = bounds.top + margin;
+        const maxY = bounds.bottom - margin;
         
         this.segments.forEach(segment => {
-            const cp1 = {
-                x: margin + Math.random() * (maxX - margin),
-                y: margin + Math.random() * (maxY - margin)
-            };
-            const cp2 = {
-                x: margin + Math.random() * (maxX - margin),
-                y: margin + Math.random() * (maxY - margin)
-            };
+            const cp1 = this.snapToGrid({
+                x: minX + Math.random() * (maxX - minX),
+                y: minY + Math.random() * (maxY - minY)
+            });
+            const cp2 = this.snapToGrid({
+                x: minX + Math.random() * (maxX - minX),
+                y: minY + Math.random() * (maxY - minY)
+            });
             
-            segment.cp1 = this.snapToGrid(cp1);
-            segment.cp2 = this.snapToGrid(cp2);
+            segment.cp1 = cp1;
+            segment.cp2 = cp2;
         });
         
         this.draw();
@@ -1626,8 +1968,7 @@ class BezierCurveDemo {
 
     // Create a Brickadia save object from curve segments (using same logic as triangle drawing)
     createBrickadaSaveFromSegments(curveSegments) {
-        const centerX = Math.round((this.canvas.width / 2) / this.gridSize) * this.gridSize;
-        const centerY = Math.round((this.canvas.height / 2) / this.gridSize) * this.gridSize;
+
         const bricks = [];
         
         const { leftPoints, rightPoints } = curveSegments;
@@ -1642,7 +1983,7 @@ class BezierCurveDemo {
                 
                 if (this.shouldDrawTriangle(startPoint, endPoint)) {
                     const segmentBricks = this.createBricksForTriangleSegment(
-                        startPoint, endPoint, side, centerX, centerY
+                        startPoint, endPoint, side
                     );
                     bricks.push(...segmentBricks);
                 }
@@ -1650,7 +1991,7 @@ class BezierCurveDemo {
         });
         
         if (this.currentFillBricks && this.currentFillBricks.length > 0) {
-            const fillBricks = this.createBricksFromFillRectangles(this.currentFillBricks, centerX, centerY);
+            const fillBricks = this.createBricksFromFillRectangles(this.currentFillBricks);
             bricks.push(...fillBricks);
         }
         
@@ -1658,25 +1999,20 @@ class BezierCurveDemo {
     }
 
     // Create bricks for a triangle segment using the same logic as drawRightTriangle
-    createBricksForTriangleSegment(startPoint, endPoint, side, centerX, centerY) {
+    createBricksForTriangleSegment(startPoint, endPoint, side) {
         const dx = endPoint.x - startPoint.x;
         const dy = endPoint.y - startPoint.y;
         const bricks = [];
         
-        if (Math.abs(dx) < this.gridSize * 0.1 || Math.abs(dy) < this.gridSize * 0.1) {
+        if (Math.abs(dx) < 0.1 || Math.abs(dy) < 0.1) {
             return bricks;
         }
+
+        const triangleWidth = Math.abs(dx);
+        const triangleHeight = Math.abs(dy);
         
-        const cornerPoint = this.calculateTriangleCorner(startPoint, endPoint, side);
-        
-        const triangleWidth = Math.abs(dx) / this.gridSize;
-        const triangleHeight = Math.abs(dy) / this.gridSize;
-        
-        const centerPointX = (startPoint.x + endPoint.x) / this.gridSize;
-        const centerPointY = (startPoint.y + endPoint.y) / this.gridSize;
-        
-        const centerGridX = (centerPointX - 2 * (centerX  / this.gridSize));
-        const centerGridY = (centerPointY - 2 * (centerY / this.gridSize));
+        const centerPointX = (startPoint.x + endPoint.x);
+        const centerPointY = (startPoint.y + endPoint.y);
         
         const wedgeOrientation = this.getWedgeRotationFromTriangleCorner(dx, dy, side);
         
@@ -1685,7 +2021,7 @@ class BezierCurveDemo {
         bricks.push({
             asset_name_index: 1,
             size: [wedgeWidth, wedgeHeight, this.brickHeight],
-            position: [centerGridX, centerGridY, (this.brickHeight - 1) * 2 + 1],
+            position: [centerPointX, centerPointY, (this.brickHeight - 1) * 2 + 1],
             direction: wedgeOrientation.direction,
             rotation: wedgeOrientation.rotation,
             collision: true,
@@ -1701,21 +2037,21 @@ class BezierCurveDemo {
     }
 
     // Create bricks from fill rectangles
-    createBricksFromFillRectangles(fillBricks, centerX, centerY) {
+    createBricksFromFillRectangles(fillBricks) {
         const bricks = [];
         
         fillBricks.forEach(fillBrick => {
-            // Convert grid coordinates to Brickadia coordinates
-            const centerGridX = 2 * fillBrick.gridX + fillBrick.width;
-            const centerGridY = 2 * fillBrick.gridY + fillBrick.height;
+            // Calculate dimensions from start and end points
+            const centerPointX = (fillBrick.startPoint.x + fillBrick.endPoint.x);
+            const centerPointY = (fillBrick.startPoint.y + fillBrick.endPoint.y);
             
-            const brickladiaX = (centerGridX - 2 * centerX / this.gridSize);
-            const brickladiaY = (centerGridY - 2 * centerY / this.gridSize);
-            
+            const width = Math.abs(fillBrick.endPoint.x - fillBrick.startPoint.x);
+            const height = Math.abs(fillBrick.endPoint.y - fillBrick.startPoint.y);
+
             bricks.push({
                 asset_name_index: 0, // Use regular microbrick for fill
-                size: [fillBrick.width, fillBrick.height, this.brickHeight],
-                position: [brickladiaX, brickladiaY, (this.brickHeight - 1) * 2 + 1],
+                size: [width, height, this.brickHeight],
+                position: [centerPointX, centerPointY, (this.brickHeight - 1) * 2 + 1],
                 direction: 4, // Upward direction
                 rotation: 0,
                 collision: true,
@@ -1787,44 +2123,6 @@ class BezierCurveDemo {
         
         return { rotation: 0, direction: 4 }; // Default rotation and direction
     }
-
-    // Check if a point should use a wedge based on direction changes (similar to triangle detection)
-    shouldUseWedgeForPoint(dx1, dy1, dx2, dy2) {
-        // Use the same logic as shouldDrawTriangle - check if both direction changes are significant
-        const threshold = this.gridSize * 0.1; // Same threshold as drawRightTriangle
-        
-        // Check if we have significant movement in both directions for at least one of the segments
-        const segment1HasDiagonal = Math.abs(dx1) > threshold && Math.abs(dy1) > threshold;
-        const segment2HasDiagonal = Math.abs(dx2) > threshold && Math.abs(dy2) > threshold;
-        
-        // Also check if there's a clear directional change (not just continuing in the same direction)
-        const directionChanged = this.hasSignificantDirectionChange(dx1, dy1, dx2, dy2);
-        
-        return (segment1HasDiagonal || segment2HasDiagonal) && directionChanged;
-    }
-    
-    // Check if there's a significant direction change between two segments
-    hasSignificantDirectionChange(dx1, dy1, dx2, dy2) {
-        // Normalize direction vectors
-        const length1 = Math.sqrt(dx1 * dx1 + dy1 * dy1);
-        const length2 = Math.sqrt(dx2 * dx2 + dy2 * dy2);
-        
-        if (length1 === 0 || length2 === 0) return false;
-        
-        const ndx1 = dx1 / length1;
-        const ndy1 = dy1 / length1;
-        const ndx2 = dx2 / length2;
-        const ndy2 = dy2 / length2;
-        
-        // Calculate dot product to measure direction similarity
-        const dotProduct = ndx1 * ndx2 + ndy1 * ndy2;
-        
-        // If dot product is close to 1, directions are very similar (no significant change)
-        // If dot product is close to -1, directions are opposite
-        // We want to detect corners, so look for dot products indicating angular changes
-        return Math.abs(dotProduct) < 0.8; // Threshold for detecting significant direction change
-    }
-    
     // Get wedge rotation and direction based on direction changes (adapted from triangle corner logic)
     getWedgeRotationForDirections(dx1, dy1, dx2, dy2) {
         // Normalize directions to -1, 0, or 1 for pattern matching
