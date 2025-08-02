@@ -11,6 +11,11 @@ class BezierCurveDemo {
         this.showControlPoints = true;
         this.gridSnap = true;
         
+        // Context menu for anchor point operations
+        this.selectedAnchor = null;
+        this.contextMenuVisible = false;
+        this.contextMenuButtons = [];
+        
         // Viewport/Camera properties for pan and zoom
         this.camera = {
             x: 0,      // Camera position in world coordinates
@@ -59,7 +64,7 @@ class BezierCurveDemo {
         // Center the camera and set up initial curve area
         this.camera.x = 15; // Center around x=15 in world coordinates
         this.camera.y = 10; // Center around y=10 in world coordinates
-        this.camera.zoom = 20; // 20 pixels per grid unit
+        this.camera.zoom = 10; // 20 pixels per grid unit
     }
     
     init() {
@@ -326,8 +331,8 @@ class BezierCurveDemo {
         
         // Generate segments in a fixed area in world coordinates
         // Use fixed coordinates that don't depend on camera position
-        const worldWidth = 20; // Fixed width in world units
-        const worldHeight = 15; // Fixed height in world units
+        const worldWidth = 80; // Fixed width in world units
+        const worldHeight = 80; // Fixed height in world units
         
         // Fixed center point in world coordinates
         const fixedCenterX = 15;
@@ -350,13 +355,41 @@ class BezierCurveDemo {
             const cp1 = this.snapToGrid({ x: segmentStartX + segmentWidth * 0.25, y: centerY - marginY });
             const cp2 = this.snapToGrid({ x: segmentStartX + segmentWidth * 0.75, y: centerY + marginY });
             
-            this.segments.push({ start, cp1, cp2, end });
+            // Store relative positions of control points for automatic following
+            const cp1RelativeToStart = {
+                x: cp1.x - start.x,
+                y: cp1.y - start.y
+            };
+            const cp2RelativeToEnd = {
+                x: cp2.x - end.x,
+                y: cp2.y - end.y
+            };
+            
+            this.segments.push({ 
+                start, 
+                cp1, 
+                cp2, 
+                end,
+                // Store relative positions for control point following
+                cp1RelativeToStart,
+                cp2RelativeToEnd
+            });
         }
         
         // Ensure segment continuity
         for (let i = 1; i < this.segments.length; i++) {
             this.segments[i].start.x = this.segments[i - 1].end.x;
             this.segments[i].start.y = this.segments[i - 1].end.y;
+            // Update cp1 relative position after continuity adjustment
+            this.segments[i].cp1RelativeToStart = {
+                x: this.segments[i].cp1.x - this.segments[i].start.x,
+                y: this.segments[i].cp1.y - this.segments[i].start.y
+            };
+            // Update cp2 relative position for the previous segment after continuity adjustment
+            this.segments[i - 1].cp2RelativeToEnd = {
+                x: this.segments[i - 1].cp2.x - this.segments[i - 1].end.x,
+                y: this.segments[i - 1].cp2.y - this.segments[i - 1].end.y
+            };
         }
         
         // Invalidate cache when segments change
@@ -563,6 +596,7 @@ class BezierCurveDemo {
         
         // Right click or middle click for panning
         if (e.button === 2 || e.button === 1) {
+            this.hideContextMenu();
             this.isPanning = true;
             this.lastPanPoint = screenPos;
             this.canvas.style.cursor = 'grabbing';
@@ -571,14 +605,32 @@ class BezierCurveDemo {
         
         // Left click for control point dragging
         if (e.button === 0) {
+            // Check if clicking on context menu first
+            if (this.handleContextMenuClick(screenPos)) {
+                return;
+            }
+            
             const nearestPoint = this.findNearestPoint(pos);
             
             if (nearestPoint) {
-                this.isDragging = true;
-                this.dragPoint = nearestPoint;
-                this.canvas.style.cursor = 'grabbing';
+                // Check if this is an anchor point (start or end)
+                if (nearestPoint.pointType === 'start' || nearestPoint.pointType === 'end') {
+                    // Immediately start dragging and show context menu
+                    this.selectedAnchor = nearestPoint;
+                    this.showContextMenu(nearestPoint);
+                    this.isDragging = true;
+                    this.dragPoint = nearestPoint;
+                    this.canvas.style.cursor = 'grabbing';
+                } else {
+                    // Hide context menu and drag control point
+                    this.hideContextMenu();
+                    this.isDragging = true;
+                    this.dragPoint = nearestPoint;
+                    this.canvas.style.cursor = 'grabbing';
+                }
             } else {
-                // Start panning if not clicking on a control point
+                // Hide context menu and start panning if not clicking on a control point
+                this.hideContextMenu();
                 this.isPanning = true;
                 this.lastPanPoint = screenPos;
                 this.canvas.style.cursor = 'grabbing';
@@ -598,11 +650,32 @@ class BezierCurveDemo {
             const deltaY = screenPos.y - this.lastPanPoint.y;
             this.panCamera(deltaX, deltaY);
             this.lastPanPoint = screenPos;
+            
+            // Update context menu position if visible
+            if (this.contextMenuVisible) {
+                this.updateContextMenuPosition();
+            }
+            
             this.drawThrottled();
         } else if (this.isDragging && this.dragPoint) {
             const snappedPos = this.snapToGrid(pos);
+            
+            // Store the old position for calculating movement delta
+            const oldX = this.dragPoint.point.x;
+            const oldY = this.dragPoint.point.y;
+            
             this.dragPoint.point.x = snappedPos.x;
             this.dragPoint.point.y = snappedPos.y;
+            
+            // Update control points to follow their anchor points
+            this.updateControlPointPositions(this.dragPoint);
+            
+            // Update context menu position if dragging a selected anchor
+            if (this.selectedAnchor && 
+                this.selectedAnchor.segmentIndex === this.dragPoint.segmentIndex && 
+                this.selectedAnchor.pointType === this.dragPoint.pointType) {
+                this.updateContextMenuPosition();
+            }
             
             // Ensure continuity between segments
             this.maintainContinuity();
@@ -632,6 +705,12 @@ class BezierCurveDemo {
         const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
         
         this.zoomCamera(zoomFactor, screenPos);
+        
+        // Update context menu position if visible
+        if (this.contextMenuVisible) {
+            this.updateContextMenuPosition();
+        }
+        
         this.draw();
     }
     
@@ -653,6 +732,217 @@ class BezierCurveDemo {
         this.onMouseUp(e);
     }
     
+    showContextMenu(anchorPoint) {
+        this.selectedAnchor = anchorPoint;
+        this.contextMenuVisible = true;
+        this.createContextMenuButtons();
+        this.updateContextMenuPosition();
+        this.draw();
+    }
+    
+    hideContextMenu() {
+        this.selectedAnchor = null;
+        this.contextMenuVisible = false;
+        this.contextMenuButtons = [];
+        this.draw();
+    }
+    
+    createContextMenuButtons() {
+        this.contextMenuButtons = [
+            {
+                label: '+',
+                tooltip: 'Add segment to left',
+                action: () => this.addSegmentLeft(),
+                color: '#4CAF50'
+            },
+            {
+                label: 'X',
+                tooltip: 'Delete anchor',
+                action: () => this.deleteAnchor(),
+                color: '#f44336'
+            },
+            {
+                label: '+',
+                tooltip: 'Add segment to right',
+                action: () => this.addSegmentRight(),
+                color: '#4CAF50'
+            }
+        ];
+    }
+    
+    updateContextMenuPosition() {
+        if (!this.selectedAnchor || !this.contextMenuVisible) return;
+        
+        const anchorScreenPos = this.worldToScreen(this.selectedAnchor.point);
+        const tangent = this.getTangentAtAnchor(this.selectedAnchor.segmentIndex, this.selectedAnchor.pointType);
+        
+        // Calculate perpendicular vector (90 degrees to tangent)
+        const perpendicular = { x: -tangent.y, y: tangent.x };
+        
+        // Scale button radius and distance with zoom level (but clamp to reasonable bounds)
+        const baseButtonRadius = 10;
+        const baseDistance = 60;
+        const zoomScale = Math.max(0.5, Math.min(2.0, this.camera.zoom / 20)); // Scale between 0.5x and 2x
+        
+        const buttonRadius = baseButtonRadius;
+        const distance = baseDistance * zoomScale;
+        
+        this.contextMenuButtons.forEach((button, index) => {
+            button.radius = buttonRadius;
+            
+            if (index === 0) { // Add left
+                button.x = anchorScreenPos.x - tangent.x * distance;
+                button.y = anchorScreenPos.y - tangent.y * distance;
+            } else if (index === 2) { // Add right
+                button.x = anchorScreenPos.x + tangent.x * distance;
+                button.y = anchorScreenPos.y + tangent.y * distance;
+            } else if (index === 1) { // Delete
+                button.x = anchorScreenPos.x - perpendicular.x * distance;
+                button.y = anchorScreenPos.y - perpendicular.y * distance;
+            }
+        });
+    }
+    
+    drawContextMenu() {
+        if (!this.contextMenuVisible || !this.selectedAnchor) return;
+        
+        this.contextMenuButtons.forEach(button => {
+            // Draw circular button background
+            this.ctx.beginPath();
+            this.ctx.arc(button.x, button.y, button.radius, 0, 2 * Math.PI);
+            this.ctx.fillStyle = button.color;
+            this.ctx.fill();
+            
+            // Draw button border
+            this.ctx.strokeStyle = 'white';
+            this.ctx.lineWidth = 2;
+            this.ctx.stroke();
+            
+            // Draw symbol based on button label
+            this.ctx.strokeStyle = '#fff';
+            this.ctx.lineWidth = Math.max(2, button.radius * 0.15); // Scale line width with button size
+            this.ctx.lineCap = 'round';
+            
+            if (button.label === '+') {
+                // Draw plus symbol
+                const symbolSize = button.radius * 0.6;
+                
+                // Horizontal line
+                this.ctx.beginPath();
+                this.ctx.moveTo(button.x - symbolSize / 2, button.y);
+                this.ctx.lineTo(button.x + symbolSize / 2, button.y);
+                this.ctx.stroke();
+                
+                // Vertical line
+                this.ctx.beginPath();
+                this.ctx.moveTo(button.x, button.y - symbolSize / 2);
+                this.ctx.lineTo(button.x, button.y + symbolSize / 2);
+                this.ctx.stroke();
+            } else if (button.label === 'X') {
+                // Draw X symbol
+                const symbolSize = button.radius * 0.6;
+                
+                // First diagonal line
+                this.ctx.beginPath();
+                this.ctx.moveTo(button.x - symbolSize / 2, button.y - symbolSize / 2);
+                this.ctx.lineTo(button.x + symbolSize / 2, button.y + symbolSize / 2);
+                this.ctx.stroke();
+                
+                // Second diagonal line
+                this.ctx.beginPath();
+                this.ctx.moveTo(button.x + symbolSize / 2, button.y - symbolSize / 2);
+                this.ctx.lineTo(button.x - symbolSize / 2, button.y + symbolSize / 2);
+                this.ctx.stroke();
+            }
+        });
+    }
+    
+    handleContextMenuClick(screenPos) {
+        if (!this.contextMenuVisible) return false;
+        
+        for (const button of this.contextMenuButtons) {
+            // Calculate distance from click point to button center
+            const dx = screenPos.x - button.x;
+            const dy = screenPos.y - button.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            
+            // Check if click is within the circular button
+            if (distance <= button.radius) {
+                button.action();
+                this.hideContextMenu();
+                return true;
+            }
+        }
+        return false;
+    }
+    
+    addSegmentLeft() {
+        const segmentIndex = this.selectedAnchor.segmentIndex;
+        const pointType = this.selectedAnchor.pointType;
+        
+        if (pointType === 'start') {
+            // Split the previous segment (if it exists) at its midpoint
+            if (segmentIndex > 0) {
+                this.splitSegmentAtMidpoint(segmentIndex - 1);
+            } else {
+                // If this is the first segment, extend before it
+                this.insertSegmentBefore(segmentIndex);
+            }
+        } else if (pointType === 'end') {
+            // Split the current segment at its midpoint
+            this.splitSegmentAtMidpoint(segmentIndex);
+        }
+    }
+    
+    addSegmentRight() {
+        const segmentIndex = this.selectedAnchor.segmentIndex;
+        const pointType = this.selectedAnchor.pointType;
+        
+        if (pointType === 'start') {
+            // Split the current segment at its midpoint
+            this.splitSegmentAtMidpoint(segmentIndex);
+        } else if (pointType === 'end') {
+            // Split the next segment (if it exists) at its midpoint
+            if (segmentIndex < this.segments.length - 1) {
+                this.splitSegmentAtMidpoint(segmentIndex + 1);
+            } else {
+                // If this is the last segment, extend after it
+                this.insertSegmentAfter(segmentIndex);
+            }
+        }
+    }
+    
+    deleteAnchor() {
+        const segmentIndex = this.selectedAnchor.segmentIndex;
+        const pointType = this.selectedAnchor.pointType;
+        
+        // Don't allow deletion if it would leave us with no segments
+        if (this.segments.length <= 1) {
+            alert('Cannot delete the last segment!');
+            return;
+        }
+        
+        if (pointType === 'start' && segmentIndex > 0) {
+            // Merge with previous segment
+            this.mergeSegments(segmentIndex - 1, segmentIndex);
+        } else if (pointType === 'end' && segmentIndex < this.segments.length - 1) {
+            // Merge with next segment
+            this.mergeSegments(segmentIndex, segmentIndex + 1);
+        } else if (pointType === 'start' && segmentIndex === 0) {
+            // Remove first segment
+            this.segments.splice(0, 1);
+            this.segmentCount = this.segments.length;
+        } else if (pointType === 'end' && segmentIndex === this.segments.length - 1) {
+            // Remove last segment
+            this.segments.splice(-1, 1);
+            this.segmentCount = this.segments.length;
+        }
+        
+        this.invalidateCurveCache();
+        this.updateSliderDisplays();
+        this.draw();
+    }
+    
     maintainContinuity() {
         // Ensure the end point of one segment matches the start point of the next
         for (let i = 0; i < this.segments.length - 1; i++) {
@@ -664,6 +954,395 @@ class BezierCurveDemo {
                 this.segments[i].end.y = this.segments[i + 1].start.y;
             }
         }
+    }
+    
+    getTangentAtAnchor(segmentIndex, pointType) {
+        const segment = this.segments[segmentIndex];
+        
+        if (pointType === 'start') {
+            // For start point, calculate tangent from start towards cp1
+            const dx = segment.cp1.x - segment.start.x;
+            const dy = segment.cp1.y - segment.start.y;
+            const length = Math.sqrt(dx * dx + dy * dy);
+            
+            if (length > 0) {
+                return { x: dx / length, y: dy / length };
+            } else {
+                // Fallback: use direction towards end point
+                const fallbackDx = segment.end.x - segment.start.x;
+                const fallbackDy = segment.end.y - segment.start.y;
+                const fallbackLength = Math.sqrt(fallbackDx * fallbackDx + fallbackDy * fallbackDy);
+                return fallbackLength > 0 ? 
+                    { x: fallbackDx / fallbackLength, y: fallbackDy / fallbackLength } : 
+                    { x: 1, y: 0 };
+            }
+        } else if (pointType === 'end') {
+            // For end point, calculate tangent from cp2 towards end
+            const dx = segment.end.x - segment.cp2.x;
+            const dy = segment.end.y - segment.cp2.y;
+            const length = Math.sqrt(dx * dx + dy * dy);
+            
+            if (length > 0) {
+                return { x: dx / length, y: dy / length };
+            } else {
+                // Fallback: use direction from start point
+                const fallbackDx = segment.end.x - segment.start.x;
+                const fallbackDy = segment.end.y - segment.start.y;
+                const fallbackLength = Math.sqrt(fallbackDx * fallbackDx + fallbackDy * fallbackDy);
+                return fallbackLength > 0 ? 
+                    { x: fallbackDx / fallbackLength, y: fallbackDy / fallbackLength } : 
+                    { x: 1, y: 0 };
+            }
+        }
+        
+        return { x: 1, y: 0 }; // Default fallback
+    }
+    
+    updateControlPointPositions(dragPoint) {
+        const segment = this.segments[dragPoint.segmentIndex];
+        
+        // Update control points based on which anchor point was moved
+        if (dragPoint.pointType === 'start') {
+            // Update cp1 to maintain its relative position to the start point
+            segment.cp1.x = segment.start.x + segment.cp1RelativeToStart.x;
+            segment.cp1.y = segment.start.y + segment.cp1RelativeToStart.y;
+            
+            // If this is not the first segment, also update cp2 of the previous segment
+            if (dragPoint.segmentIndex > 0) {
+                const prevSegment = this.segments[dragPoint.segmentIndex - 1];
+                prevSegment.cp2.x = prevSegment.end.x + prevSegment.cp2RelativeToEnd.x;
+                prevSegment.cp2.y = prevSegment.end.y + prevSegment.cp2RelativeToEnd.y;
+            }
+        } else if (dragPoint.pointType === 'end') {
+            // Update cp2 to maintain its relative position to the end point
+            segment.cp2.x = segment.end.x + segment.cp2RelativeToEnd.x;
+            segment.cp2.y = segment.end.y + segment.cp2RelativeToEnd.y;
+            
+            // If this is not the last segment, also update cp1 of the next segment
+            if (dragPoint.segmentIndex < this.segments.length - 1) {
+                const nextSegment = this.segments[dragPoint.segmentIndex + 1];
+                nextSegment.cp1.x = nextSegment.start.x + nextSegment.cp1RelativeToStart.x;
+                nextSegment.cp1.y = nextSegment.start.y + nextSegment.cp1RelativeToStart.y;
+            }
+        } else if (dragPoint.pointType === 'cp1') {
+            // Update the relative position when cp1 is directly moved
+            segment.cp1RelativeToStart = {
+                x: segment.cp1.x - segment.start.x,
+                y: segment.cp1.y - segment.start.y
+            };
+        } else if (dragPoint.pointType === 'cp2') {
+            // Update the relative position when cp2 is directly moved
+            segment.cp2RelativeToEnd = {
+                x: segment.cp2.x - segment.end.x,
+                y: segment.cp2.y - segment.end.y
+            };
+        }
+    }
+    
+    splitSegmentAtMidpoint(segmentIndex) {
+        const segment = this.segments[segmentIndex];
+        
+        // Calculate the actual Bezier curve point at t=0.5 (true midpoint)
+        const midPoint = this.calculateBezierPoint(segment, 0.5);
+        
+        // Use De Casteljau's algorithm to split the Bezier curve at t=0.5
+        // This gives us the exact control points for both halves
+        const { leftSegment, rightSegment } = this.splitBezierCurveAt(segment, 0.5);
+        
+        // Snap the midpoint to grid
+        const snappedMidPoint = this.snapToGrid(midPoint);
+        
+        // Update the left segment (becomes the original segment)
+        segment.cp1 = this.snapToGrid(leftSegment.cp1);
+        segment.cp2 = this.snapToGrid(leftSegment.cp2);
+        segment.end = snappedMidPoint;
+        
+        // Calculate relative positions for the left segment
+        segment.cp1RelativeToStart = {
+            x: segment.cp1.x - segment.start.x,
+            y: segment.cp1.y - segment.start.y
+        };
+        segment.cp2RelativeToEnd = {
+            x: segment.cp2.x - segment.end.x,
+            y: segment.cp2.y - segment.end.y
+        };
+        
+        // Create the right segment
+        const newSegment = {
+            start: snappedMidPoint,
+            cp1: this.snapToGrid(rightSegment.cp1),
+            cp2: this.snapToGrid(rightSegment.cp2),
+            end: this.snapToGrid(rightSegment.end),
+            cp1RelativeToStart: {
+                x: rightSegment.cp1.x - snappedMidPoint.x,
+                y: rightSegment.cp1.y - snappedMidPoint.y
+            },
+            cp2RelativeToEnd: {
+                x: rightSegment.cp2.x - rightSegment.end.x,
+                y: rightSegment.cp2.y - rightSegment.end.y
+            }
+        };
+        
+        // Insert the new segment after the current one
+        this.segments.splice(segmentIndex + 1, 0, newSegment);
+        this.segmentCount = this.segments.length;
+        this.invalidateCurveCache();
+        this.updateSliderDisplays();
+    }
+    
+    splitBezierCurveAt(segment, t) {
+        // De Casteljau's algorithm to split a cubic Bezier curve at parameter t
+        const { start, cp1, cp2, end } = segment;
+        
+        // First level interpolation
+        const q0 = this.lerp(start, cp1, t);
+        const q1 = this.lerp(cp1, cp2, t);
+        const q2 = this.lerp(cp2, end, t);
+        
+        // Second level interpolation
+        const r0 = this.lerp(q0, q1, t);
+        const r1 = this.lerp(q1, q2, t);
+        
+        // Final interpolation (the split point)
+        const splitPoint = this.lerp(r0, r1, t);
+        
+        // Left segment: start -> splitPoint
+        const leftSegment = {
+            start: start,
+            cp1: q0,
+            cp2: r0,
+            end: splitPoint
+        };
+        
+        // Right segment: splitPoint -> end
+        const rightSegment = {
+            start: splitPoint,
+            cp1: r1,
+            cp2: q2,
+            end: end
+        };
+        
+        return { leftSegment, rightSegment };
+    }
+    
+    lerp(p1, p2, t) {
+        // Linear interpolation between two points
+        return {
+            x: p1.x + (p2.x - p1.x) * t,
+            y: p1.y + (p2.y - p1.y) * t
+        };
+    }
+    
+    insertSegmentBefore(segmentIndex) {
+        const currentSegment = this.segments[segmentIndex];
+        const prevSegment = segmentIndex > 0 ? this.segments[segmentIndex - 1] : null;
+        
+        // Calculate midpoint for new segment
+        let newStart, newEnd;
+        if (prevSegment) {
+            // Midpoint between previous segment end and current segment start
+            newStart = {
+                x: (prevSegment.end.x + currentSegment.start.x) / 2,
+                y: (prevSegment.end.y + currentSegment.start.y) / 2
+            };
+            newEnd = { ...currentSegment.start };
+        } else {
+            // Extend before the first segment using the tangent direction
+            const tangent = this.getTangentAtAnchor(segmentIndex, 'start');
+            const extensionLength = 20; // Length of extension in world units
+            
+            newEnd = { ...currentSegment.start };
+            newStart = {
+                x: currentSegment.start.x - tangent.x * extensionLength,
+                y: currentSegment.start.y - tangent.y * extensionLength
+            };
+        }
+        
+        // Create control points for new segment
+        const newCP1 = {
+            x: newStart.x + (newEnd.x - newStart.x) * 0.25,
+            y: newStart.y + (newEnd.y - newStart.y) * 0.25
+        };
+        const newCP2 = {
+            x: newStart.x + (newEnd.x - newStart.x) * 0.75,
+            y: newStart.y + (newEnd.y - newStart.y) * 0.75
+        };
+        
+        const newSegment = {
+            start: this.snapToGrid(newStart),
+            cp1: this.snapToGrid(newCP1),
+            cp2: this.snapToGrid(newCP2),
+            end: this.snapToGrid(newEnd),
+            cp1RelativeToStart: {
+                x: newCP1.x - newStart.x,
+                y: newCP1.y - newStart.y
+            },
+            cp2RelativeToEnd: {
+                x: newCP2.x - newEnd.x,
+                y: newCP2.y - newEnd.y
+            }
+        };
+        
+        this.segments.splice(segmentIndex, 0, newSegment);
+        this.segmentCount = this.segments.length;
+        this.invalidateCurveCache();
+        this.updateSliderDisplays();
+    }
+    
+    insertSegmentAfter(segmentIndex) {
+        const currentSegment = this.segments[segmentIndex];
+        const nextSegment = segmentIndex < this.segments.length - 1 ? this.segments[segmentIndex + 1] : null;
+        
+        // Calculate midpoint for new segment
+        let newStart, newEnd;
+        newStart = { ...currentSegment.end };
+        if (nextSegment) {
+            // Midpoint between current segment end and next segment start
+            newEnd = {
+                x: (currentSegment.end.x + nextSegment.start.x) / 2,
+                y: (currentSegment.end.y + nextSegment.start.y) / 2
+            };
+        } else {
+            // Extend after the last segment using the tangent direction
+            const tangent = this.getTangentAtAnchor(segmentIndex, 'end');
+            const extensionLength = 20; // Length of extension in world units
+            
+            newEnd = {
+                x: currentSegment.end.x + tangent.x * extensionLength,
+                y: currentSegment.end.y + tangent.y * extensionLength
+            };
+        }
+        
+        // Create control points for new segment
+        const newCP1 = {
+            x: newStart.x + (newEnd.x - newStart.x) * 0.25,
+            y: newStart.y + (newEnd.y - newStart.y) * 0.25
+        };
+        const newCP2 = {
+            x: newStart.x + (newEnd.x - newStart.x) * 0.75,
+            y: newStart.y + (newEnd.y - newStart.y) * 0.75
+        };
+        
+        const newSegment = {
+            start: this.snapToGrid(newStart),
+            cp1: this.snapToGrid(newCP1),
+            cp2: this.snapToGrid(newCP2),
+            end: this.snapToGrid(newEnd),
+            cp1RelativeToStart: {
+                x: newCP1.x - newStart.x,
+                y: newCP1.y - newStart.y
+            },
+            cp2RelativeToEnd: {
+                x: newCP2.x - newEnd.x,
+                y: newCP2.y - newEnd.y
+            }
+        };
+        
+        this.segments.splice(segmentIndex + 1, 0, newSegment);
+        this.segmentCount = this.segments.length;
+        this.invalidateCurveCache();
+        this.updateSliderDisplays();
+    }
+    
+    splitSegmentAt(segmentIndex, splitPoint) {
+        const segment = this.segments[segmentIndex];
+        
+        // Calculate midpoint between start and end
+        const midPoint = {
+            x: (segment.start.x + segment.end.x) / 2,
+            y: (segment.start.y + segment.end.y) / 2
+        };
+        
+        if (splitPoint === 'start') {
+            // Create new segment before current, ending at start point
+            const newStart = {
+                x: segment.start.x - (segment.end.x - segment.start.x) * 0.5,
+                y: segment.start.y - (segment.end.y - segment.start.y) * 0.5
+            };
+            
+            const newCP1 = {
+                x: newStart.x + (segment.start.x - newStart.x) * 0.25,
+                y: newStart.y + (segment.start.y - newStart.y) * 0.25
+            };
+            const newCP2 = {
+                x: newStart.x + (segment.start.x - newStart.x) * 0.75,
+                y: newStart.y + (segment.start.y - newStart.y) * 0.75
+            };
+            
+            const newSegment = {
+                start: this.snapToGrid(newStart),
+                cp1: this.snapToGrid(newCP1),
+                cp2: this.snapToGrid(newCP2),
+                end: { ...segment.start },
+                cp1RelativeToStart: {
+                    x: newCP1.x - newStart.x,
+                    y: newCP1.y - newStart.y
+                },
+                cp2RelativeToEnd: {
+                    x: newCP2.x - segment.start.x,
+                    y: newCP2.y - segment.start.y
+                }
+            };
+            
+            this.segments.splice(segmentIndex, 0, newSegment);
+        } else {
+            // Create new segment after current, starting at end point
+            const newEnd = {
+                x: segment.end.x + (segment.end.x - segment.start.x) * 0.5,
+                y: segment.end.y + (segment.end.y - segment.start.y) * 0.5
+            };
+            
+            const newCP1 = {
+                x: segment.end.x + (newEnd.x - segment.end.x) * 0.25,
+                y: segment.end.y + (newEnd.y - segment.end.y) * 0.25
+            };
+            const newCP2 = {
+                x: segment.end.x + (newEnd.x - segment.end.x) * 0.75,
+                y: segment.end.y + (newEnd.y - segment.end.y) * 0.75
+            };
+            
+            const newSegment = {
+                start: { ...segment.end },
+                cp1: this.snapToGrid(newCP1),
+                cp2: this.snapToGrid(newCP2),
+                end: this.snapToGrid(newEnd),
+                cp1RelativeToStart: {
+                    x: newCP1.x - segment.end.x,
+                    y: newCP1.y - segment.end.y
+                },
+                cp2RelativeToEnd: {
+                    x: newCP2.x - newEnd.x,
+                    y: newCP2.y - newEnd.y
+                }
+            };
+            
+            this.segments.splice(segmentIndex + 1, 0, newSegment);
+        }
+        
+        this.segmentCount = this.segments.length;
+        this.invalidateCurveCache();
+        this.updateSliderDisplays();
+    }
+    
+    mergeSegments(segment1Index, segment2Index) {
+        const seg1 = this.segments[segment1Index];
+        const seg2 = this.segments[segment2Index];
+        
+        // Create merged segment using start of first and end of second
+        const mergedSegment = {
+            start: { ...seg1.start },
+            cp1: { ...seg1.cp1 },
+            cp2: { ...seg2.cp2 },
+            end: { ...seg2.end },
+            cp1RelativeToStart: { ...seg1.cp1RelativeToStart },
+            cp2RelativeToEnd: { ...seg2.cp2RelativeToEnd }
+        };
+        
+        // Replace both segments with the merged one
+        this.segments.splice(segment1Index, 2, mergedSegment);
+        this.segmentCount = this.segments.length;
+        this.invalidateCurveCache();
+        this.updateSliderDisplays();
     }
     
     drawBezierSegment(segment) {
@@ -712,27 +1391,45 @@ class BezierCurveDemo {
         this.ctx.setLineDash([]);
     }
     
-    drawControlPoints(segment) {
+    drawControlPoints(segment, segmentIndex) {
         if (!this.showControlPoints) return;
         
         const points = [
-            { point: segment.start, color: '#2ecc71', type: 'anchor' },
-            { point: segment.cp1, color: '#3498db', type: 'control' },
-            { point: segment.cp2, color: '#3498db', type: 'control' },
-            { point: segment.end, color: '#2ecc71', type: 'anchor' }
+            { point: segment.start, color: '#2ecc71', type: 'anchor', pointType: 'start' },
+            { point: segment.cp1, color: '#3498db', type: 'control', pointType: 'cp1' },
+            { point: segment.cp2, color: '#3498db', type: 'control', pointType: 'cp2' },
+            { point: segment.end, color: '#2ecc71', type: 'anchor', pointType: 'end' }
         ];
         
-        points.forEach(({ point, color, type }) => {
+        points.forEach(({ point, color, type, pointType }) => {
             const screenPoint = this.worldToScreen(point);
+            
+            // Check if this is the selected anchor
+            const isSelected = this.selectedAnchor && 
+                             this.selectedAnchor.segmentIndex === segmentIndex && 
+                             this.selectedAnchor.pointType === pointType &&
+                             type === 'anchor';
             
             // Draw the control point circle
             this.ctx.beginPath();
-            this.ctx.arc(screenPoint.x, screenPoint.y, type === 'anchor' ? 8 : 6, 0, 2 * Math.PI);
-            this.ctx.fillStyle = color;
+            const radius = type === 'anchor' ? 8 : 6;
+            this.ctx.arc(screenPoint.x, screenPoint.y, radius, 0, 2 * Math.PI);
+            this.ctx.fillStyle = isSelected ? '#ff6b35' : color; // Orange for selected
             this.ctx.fill();
-            this.ctx.strokeStyle = '#fff';
-            this.ctx.lineWidth = 2;
+            this.ctx.strokeStyle = isSelected ? '#ff6b35' : '#fff';
+            this.ctx.lineWidth = isSelected ? 3 : 2;
             this.ctx.stroke();
+            
+            // Draw additional highlight ring for selected anchor
+            if (isSelected) {
+                this.ctx.beginPath();
+                this.ctx.arc(screenPoint.x, screenPoint.y, radius + 4, 0, 2 * Math.PI);
+                this.ctx.strokeStyle = '#ff6b35';
+                this.ctx.lineWidth = 2;
+                this.ctx.setLineDash([3, 3]);
+                this.ctx.stroke();
+                this.ctx.setLineDash([]);
+            }
             
             // Draw grid coordinates
             const gridX = Math.round(point.x / this.internalGridSize);
@@ -765,11 +1462,14 @@ class BezierCurveDemo {
             this.drawCurveWidth();
         }
         
-        this.segments.forEach(segment => {
+        this.segments.forEach((segment, index) => {
             this.drawControlLines(segment);
             this.drawBezierSegment(segment);
-            this.drawControlPoints(segment);
+            this.drawControlPoints(segment, index);
         });
+        
+        // Draw context menu last so it appears on top
+        this.drawContextMenu();
     }
     
     drawGrid() {
@@ -1989,6 +2689,16 @@ class BezierCurveDemo {
             
             segment.cp1 = cp1;
             segment.cp2 = cp2;
+            
+            // Update relative positions after randomization
+            segment.cp1RelativeToStart = {
+                x: segment.cp1.x - segment.start.x,
+                y: segment.cp1.y - segment.start.y
+            };
+            segment.cp2RelativeToEnd = {
+                x: segment.cp2.x - segment.end.x,
+                y: segment.cp2.y - segment.end.y
+            };
         });
         
         // Invalidate cache when segments change
