@@ -1322,69 +1322,98 @@ class BezierCurveDemo {
     
     // Draw error values for each angular segment
     drawSegmentErrors(leftPoints, rightPoints, rawLeftPoints, rawRightPoints) {
-        // Set text style
-        this.ctx.fillStyle = '#e67e22'; // Orange color for error text
+        // Set text style - larger and more visible
+        this.ctx.fillStyle = '#e74c3c'; // Bright red color for error text
         this.ctx.font = 'bold 12px Arial';
         this.ctx.textAlign = 'center';
+        this.ctx.textBaseline = 'middle';
         this.ctx.strokeStyle = '#ffffff';
-        this.ctx.lineWidth = 3;
+        this.ctx.lineWidth = 4;
         
         // Draw error values for both boundaries
         [
-            { points: leftPoints, rawPoints: rawLeftPoints, offsetX: -15 },
-            { points: rightPoints, rawPoints: rawRightPoints, offsetX: 15 }
-        ].forEach(({ points, rawPoints, offsetX }) => {
+            { points: leftPoints, rawPoints: rawLeftPoints, offsetDirection: -1, side: 'left' },
+            { points: rightPoints, rawPoints: rawRightPoints, offsetDirection: 1, side: 'right' }
+        ].forEach(({ points, rawPoints, offsetDirection, side }) => {
             for (let i = 0; i < points.length - 1; i++) {
                 const segmentStart = points[i];
                 const segmentEnd = points[i + 1];
                 
                 if (this.shouldDrawTriangle(segmentStart, segmentEnd)) {
-                    const error = this.calculateAngularSegmentError(segmentStart, segmentEnd, rawPoints, i);
+                    // Calculate error for this specific segment
+                    // Find the closest raw points to the segment start and end
+                    const startIndex = this.findClosestRawPointIndex(segmentStart, rawPoints);
+                    const endIndex = this.findClosestRawPointIndex(segmentEnd, rawPoints);
+                    const error = this.calculateError(segmentStart, segmentEnd, rawPoints, startIndex, endIndex);
                     
-                    // Position text at midpoint of segment, offset slightly
-                    const midX = (segmentStart.x + segmentEnd.x) / 2;
-                    const midY = (segmentStart.y + segmentEnd.y) / 2;
-                    const offsetY = -5;
+                    // Calculate midpoint in world coordinates
+                    const worldMidX = (segmentStart.x + segmentEnd.x) / 2;
+                    const worldMidY = (segmentStart.y + segmentEnd.y) / 2;
                     
-                    // Draw white outline for text visibility
-                    this.ctx.strokeText(`${error.toFixed(1)}px`, midX + offsetX, midY + offsetY);
-                    // Draw the error text
-                    this.ctx.fillText(`${error.toFixed(1)}px`, midX + offsetX, midY + offsetY);
+                    // Calculate segment direction to position text perpendicular to it
+                    const segmentDx = segmentEnd.x - segmentStart.x;
+                    const segmentDy = segmentEnd.y - segmentStart.y;
+                    const segmentLength = Math.sqrt(segmentDx * segmentDx + segmentDy * segmentDy);
+                    
+                    if (segmentLength > 0) {
+                        // Normalize segment direction
+                        const normalizedDx = segmentDx / segmentLength;
+                        const normalizedDy = segmentDy / segmentLength;
+                        
+                        // Calculate perpendicular direction (rotated 90 degrees)
+                        const perpDx = -normalizedDy * offsetDirection;
+                        const perpDy = normalizedDx * offsetDirection;
+                        
+                        // Position text away from the segment line in world coordinates
+                        const offsetDistance = this.internalGridSize * 0.8; // Offset in world units
+                        const textWorldX = worldMidX + perpDx * offsetDistance;
+                        const textWorldY = worldMidY + perpDy * offsetDistance;
+                        
+                        // Convert to screen coordinates for text positioning
+                        const screenPos = this.worldToScreen({ x: textWorldX, y: textWorldY });
+                        
+                        // Format error value based on magnitude
+                        let errorText;
+                        if (error < 0.1) {
+                            errorText = `${(error * 100).toFixed(1)}c°`; // Show in centidegrees for very small errors
+                        } else if (error < 1) {
+                            errorText = `${error.toFixed(2)}°`;
+                        } else if (error < 10) {
+                            errorText = `${error.toFixed(1)}°`;
+                        } else {
+                            errorText = `${error.toFixed(0)}°`;
+                        }
+                        
+                        // Draw background rectangle for better visibility
+                        const textMetrics = this.ctx.measureText(errorText);
+                        const rectWidth = textMetrics.width + 6;
+                        const rectHeight = 16;
+                        
+                        this.ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
+                        this.ctx.fillRect(
+                            screenPos.x - rectWidth / 2,
+                            screenPos.y - rectHeight / 2,
+                            rectWidth,
+                            rectHeight
+                        );
+                        
+                        // Draw border around background
+                        this.ctx.strokeStyle = '#e74c3c';
+                        this.ctx.lineWidth = 1;
+                        this.ctx.strokeRect(
+                            screenPos.x - rectWidth / 2,
+                            screenPos.y - rectHeight / 2,
+                            rectWidth,
+                            rectHeight
+                        );
+                        
+                        // Draw the error text
+                        this.ctx.fillStyle = '#e74c3c';
+                        this.ctx.fillText(errorText, screenPos.x, screenPos.y);
+                    }
                 }
             }
         });
-    }
-    
-    // Calculate error between an angular segment and the original curve portion it represents
-    calculateAngularSegmentError(segmentStart, segmentEnd, rawPoints, segmentIndex) {
-        let totalError = 0;
-        let sampleCount = 0;
-        
-        // Sample points along the angular segment line
-        const segmentLength = this.distance(segmentStart, segmentEnd);
-        const numSamples = Math.max(5, Math.floor(segmentLength / 3)); // Sample every 3 pixels
-        
-        for (let i = 0; i <= numSamples; i++) {
-            const t = i / numSamples;
-            const linePoint = {
-                x: segmentStart.x + t * (segmentEnd.x - segmentStart.x),
-                y: segmentStart.y + t * (segmentEnd.y - segmentStart.y)
-            };
-            
-            // Find the closest point in the entire raw curve
-            let minDistance = Infinity;
-            for (let j = 0; j < rawPoints.length; j++) {
-                const distance = this.distance(linePoint, rawPoints[j]);
-                minDistance = Math.min(minDistance, distance);
-            }
-            
-            if (minDistance < Infinity) {
-                totalError += minDistance * minDistance;
-                sampleCount++;
-            }
-        }
-        
-        return sampleCount > 0 ? totalError / sampleCount : 0;
     }
     
     // Draw a right triangle for a single segment
@@ -1691,7 +1720,7 @@ class BezierCurveDemo {
         
         while (currentIndex < rawPoints.length - 1) {
             let bestNextIndex = currentIndex + 1;
-            let bestScore = -Infinity;
+            let bestScore = Infinity; // Initialize to high value since we're minimizing error
             let foundValidCandidate = false;
             let bestCandidatePoint = null;
             
@@ -1730,19 +1759,12 @@ class BezierCurveDemo {
                     
                     foundValidCandidate = true;
                     
-                    // Calculate score based on segment quality only
-                    let score = 0;
-                    
-                    const segmentQuality = this.calculateSegmentQuality(currentPoint, candidatePoint, rawPoints, currentIndex, lookAhead);
-                    score -= segmentQuality;
-                    
-                    // Bonus for angle alignment with the raw curve direction
-                    const angleAlignment = this.calculateAngleAlignment(currentPoint, candidatePoint, rawPoints, currentIndex, lookAhead);
-                    score += angleAlignment * 30;
+                    // Calculate error (lower is better)
+                    let error = this.calculateError(currentPoint, candidatePoint, rawPoints, currentIndex, lookAhead);
 
                     
-                    if (score > bestScore) {
-                        bestScore = score;
+                    if (error < bestScore) {
+                        bestScore = error;
                         bestNextIndex = lookAhead;
                         bestCandidatePoint = candidatePoint;
                     }
@@ -1768,6 +1790,11 @@ class BezierCurveDemo {
         }
         
         return smoothPath;
+    }
+
+    calculateError(startPoint, endPoint, rawPoints, startIndex, endIndex) {
+        return this.calculateSegmentQuality(startPoint, endPoint, rawPoints, startIndex, endIndex) + 
+        2 * this.calculateAngleError(startPoint, endPoint, rawPoints, startIndex, endIndex); // Returns error - lower is better
     }
 
     // Calculate how well a straight line segment represents the original curve
@@ -1804,8 +1831,7 @@ class BezierCurveDemo {
         return sampleCount > 0 ? totalDistance / sampleCount : 0;
     }
 
-    // Calculate how well the segment angle aligns with the raw curve direction
-    calculateAngleAlignment(startPoint, endPoint, rawPoints, startIndex, endIndex) {
+    calculateAngleError(startPoint, endPoint, rawPoints, startIndex, endIndex) {
         if (startIndex >= endIndex || endIndex >= rawPoints.length) return 0;
         
         const segmentAngle = Math.atan2(endPoint.y - startPoint.y, endPoint.x - startPoint.x);
@@ -1818,8 +1844,26 @@ class BezierCurveDemo {
         while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
         while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
         const angleDifference = Math.abs(angleDiff);
+
+        return angleDifference / (Math.PI / 2); 
+    }
+
+    // Find the index of the closest point in rawPoints to the given point
+    findClosestRawPointIndex(targetPoint, rawPoints) {
+        if (rawPoints.length === 0) return 0;
         
-        return Math.max(0, 1 - (angleDifference / (Math.PI / 2)));
+        let closestIndex = 0;
+        let minDistance = this.distance(targetPoint, rawPoints[0]);
+        
+        for (let i = 1; i < rawPoints.length; i++) {
+            const distance = this.distance(targetPoint, rawPoints[i]);
+            if (distance < minDistance) {
+                minDistance = distance;
+                closestIndex = i;
+            }
+        }
+        
+        return closestIndex;
     }
 
     drawGridPoints(leftPoints, rightPoints) {
